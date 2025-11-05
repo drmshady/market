@@ -22,7 +22,7 @@ import pickle
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
     page_title="Multi-Market Quant Analyzer",
-    page_icon="https://www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
+    page_icon="https.www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
     layout="wide"
 )
 
@@ -235,7 +235,6 @@ def generate_quant_report(CONFIG, progress_callback=None):
     """
     Core logic, decoupled from Streamlit.
     Fetches data, runs analysis, calculates Z-scores, and generates reports.
-    *** Includes persistent local caching via pickle. ***
     
     --- ✅ MODIFIED: Passes CONFIG to child functions ---
     """
@@ -360,7 +359,8 @@ def generate_quant_report(CONFIG, progress_callback=None):
         'momentum_12m': 'Momentum (12M %)', 'volatility_1y': 'Volatility (1Y)',
         'returnOnEquity': 'ROE (%)', 'debtToEquity': 'Debt/Equity', 'profitMargins': 'Profit Margin (%)',
         'beta': 'Beta', 'RSI': 'RSI (14)', 'ADX': 'ADX (14)',
-        'Final Stop Loss': 'Stop Loss'
+        'Final Stop Loss': 'Stop Loss',
+        'shortName': 'Name' # <-- ✅ ADDED
     })
     
     pct_cols = ['ROE (%)', 'Profit Margin (%)', 'Momentum (12M %)', 'Risk % (to Stop)']
@@ -396,9 +396,9 @@ def generate_quant_report(CONFIG, progress_callback=None):
             styles = getSampleStyleSheet()
             styles.add(ParagraphStyle(name='Left', alignment=TA_LEFT))
             
-            elements = [Paragraph(f"SPUS Quant Report - {timestamp}", styles['h1'])]
+            elements = [Paragraph(f"Quant Report - {timestamp}", styles['h1'])]
             
-            pdf_cols = ['Last Price', 'Z_Value', 'Z_Momentum', 'Z_Quality', 'Risk/Reward Ratio']
+            pdf_cols = ['Name', 'Last Price', 'Z_Value', 'Z_Momentum', 'Z_Quality', 'Risk/Reward Ratio']
             
             for sheet_name, df_sheet in data_sheets.items():
                 if sheet_name == 'All Results (Raw)': continue 
@@ -406,7 +406,9 @@ def generate_quant_report(CONFIG, progress_callback=None):
                 elements.append(Paragraph(sheet_name, styles['h2']))
                 
                 cols_to_show = [col for col in pdf_cols if col in df_sheet.columns]
-                df_pdf = df_sheet.head(15).reset_index()[['ticker'] + cols_to_show]
+                
+                # --- ✅ MODIFIED: Add Name to PDF ---
+                df_pdf = df_sheet.head(15).reset_index()[['ticker', 'Name'] + cols_to_show]
                 
                 df_pdf = df_pdf.fillna('N/A')
                 for col in cols_to_show:
@@ -415,7 +417,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
                 
                 data = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
                 
-                col_widths = [1.2*inch] + [1*inch] * len(cols_to_show)
+                col_widths = [1.2*inch, 2.0*inch] + [1*inch] * len(cols_to_show) # Added width for Name
                 table = Table(data, hAlign='LEFT', colWidths=col_widths)
                 
                 table.setStyle(TableStyle([
@@ -645,9 +647,10 @@ def create_portfolio_treemap(pl_df):
     if 'Sector' not in pl_df.columns:
         pl_df['Sector'] = "Unknown"
         
+    # --- ✅ MODIFIED: Use 'Name' for the label ---
     fig = px.treemap(
         pl_df,
-        path=[px.Constant("My Portfolio"), 'Sector', 'Ticker'],
+        path=[px.Constant("My Portfolio"), 'Sector', 'Name'],  # Hierarchy
         values='Market Value',
         color='P/L (%)',
         color_continuous_scale='RdYlGn',
@@ -813,8 +816,8 @@ def run_market_analyzer_app(config_file_name):
         except Exception as e:
             st.warning(f"Could not load logo.jpg: {e}")
         
-        st.title("SPUS Quant Analyzer")
-        st.markdown("Research-Grade Multi-Factor Analysis")
+        st.title("Quant Analyzer")
+        st.markdown(f"Market: **{config_file_name}**")
         st.divider()
 
         st.subheader("Controls")
@@ -931,7 +934,7 @@ def run_market_analyzer_app(config_file_name):
 
 
     # --- Main Page ---
-    st.title("SPUS Quantitative Dashboard")
+    st.title("Quantitative Dashboard")
     
     # --- ✅ MODIFIED: Load Data using config_file_name as key ---
     base_raw_df, base_histories, base_sheets, base_last_run_time = load_analysis_data(config_file_name, st.session_state.run_timestamp)
@@ -1128,8 +1131,13 @@ def run_market_analyzer_app(config_file_name):
                     st.warning("No stocks match the current filters.")
                 else:
                     for ticker in filtered_df.index:
-                        score = filtered_df.loc[ticker, 'Final Quant Score']
-                        label = f"{ticker} (Score: {score:.3f})"
+                        data = filtered_df.loc[ticker]
+                        score = data['Final Quant Score']
+                        # --- ✅ MODIFIED: Add Name to label ---
+                        name = data.get('shortName', ticker)
+                        if len(name) > 25:
+                            name = name[:25] + "..."
+                        label = f"**{ticker}** - {name} (Score: {score:.3f})"
                         
                         is_selected = (st.session_state.selected_ticker == ticker)
                         button_type = "primary" if is_selected else "secondary"
@@ -1142,8 +1150,9 @@ def run_market_analyzer_app(config_file_name):
         with rank_col2:
             st.subheader("Top 20 Overview")
             
+            # --- ✅ MODIFIED: Add 'shortName' ---
             display_cols = [
-                'Last Price', 'Sector', 
+                'shortName', 'Last Price', 'Sector', 
                 'entry_signal',
                 'Final Quant Score', 
                 'Z_Value', 'Z_Momentum', 'Z_Quality', 
@@ -1161,6 +1170,7 @@ def run_market_analyzer_app(config_file_name):
             st.dataframe(
                 filtered_df_display.head(20)[display_cols],
                 column_config={
+                    "shortName": st.column_config.TextColumn("Name", width="medium"), # <-- ✅ ADDED
                     "Last Price": st.column_config.NumberColumn(format="$%.2f"),
                     "Market Cap": st.column_config.NumberColumn(format="%.1f B", help="Market Cap in Billions"),
                     "entry_signal": st.column_config.TextColumn("SMC Signal"),
@@ -1252,7 +1262,9 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     --- ✅ MODIFIED: Accepts CONFIG ---
     """
     selected_ticker = ticker_data.name
-    st.subheader(f"Analysis for: {selected_ticker}")
+    
+    # --- ✅ MODIFIED: Add Name to Subheader ---
+    st.subheader(f"Analysis for: {selected_ticker} - {ticker_data.get('shortName', '')}")
 
     # Add Previous/Next Buttons
     try:
@@ -1509,7 +1521,9 @@ def display_portfolio_tab(all_data_df, CONFIG): # <-- Pass CONFIG
     portfolio_data = []
     total_market_value = 0
     total_cost = 0
-    tickers_in_portfolio = [pos['ticker'] for pos in st.session_state.portfolio]
+    
+    # --- ✅ MODIFIED: Build list of formatted names for selectbox ---
+    position_options = {} # Use a dict for {formatted_name: ticker}
 
     for position in st.session_state.portfolio:
         ticker = position['ticker']
@@ -1529,8 +1543,12 @@ def display_portfolio_tab(all_data_df, CONFIG): # <-- Pass CONFIG
         total_market_value += market_value
         total_cost += total_cost_basis
         
+        # --- ✅ ADDED: Get 'shortName' ---
+        name = ticker_data.get('shortName', ticker)
+        
         portfolio_data.append({
             "Ticker": ticker,
+            "Name": name, # <-- ✅ ADDED
             "Shares": position['shares'],
             "Cost Basis": position['cost_basis'],
             "Current Price": current_price,
@@ -1540,6 +1558,10 @@ def display_portfolio_tab(all_data_df, CONFIG): # <-- Pass CONFIG
             "P/L (%)": pl_percent,
             "Sector": ticker_data.get('Sector', 'Unknown')
         })
+        
+        # --- ✅ ADDED: Create formatted name for dropdown ---
+        position_options[f"{ticker} - {name}"] = ticker
+
 
     if not portfolio_data:
         st.error("Could not calculate P/L for portfolio. Ensure tickers are valid.")
@@ -1552,8 +1574,10 @@ def display_portfolio_tab(all_data_df, CONFIG): # <-- Pass CONFIG
     st.plotly_chart(portfolio_treemap, use_container_width=True)
 
     st.subheader("Positions Detail")
+    # --- ✅ MODIFIED: Add 'Name' to dataframe ---
     st.dataframe(pl_df.set_index('Ticker'), use_container_width=True,
         column_config={
+            "Name": st.column_config.TextColumn("Name", width="medium"), # <-- ✅ ADDED
             "Cost Basis": st.column_config.NumberColumn(format="$%.2f"),
             "Current Price": st.column_config.NumberColumn(format="$%.2f"),
             "Market Value": st.column_config.NumberColumn(format="$%.2f"),
@@ -1576,16 +1600,16 @@ def display_portfolio_tab(all_data_df, CONFIG): # <-- Pass CONFIG
     st.divider()
     st.subheader("Position Analyzer")
     
-    selected_ticker = st.selectbox("Select a position to analyze:", options=tickers_in_portfolio)
+    # --- ✅ MODIFIED: Use formatted names in selectbox ---
+    selected_formatted_name = st.selectbox("Select a position to analyze:", options=position_options.keys())
     
-    if selected_ticker:
+    if selected_formatted_name:
+        selected_ticker = position_options[selected_formatted_name] # Get ticker from dict
         
-        # --- ✅ NEW: Add Deep Dive Button ---
         if st.button(f"🔬 Go to Deep Dive for {selected_ticker}", key=f"deep_dive_port_{selected_ticker}"):
             st.session_state.selected_ticker = selected_ticker
             st.session_state.active_tab = "🔬 Ticker Deep Dive"
             st.rerun()
-        # --- ✅ END NEW BUTTON ---
 
         position_data = next(p for p in st.session_state.portfolio if p['ticker'] == selected_ticker)
         ticker_data = all_data_df.loc[selected_ticker]
