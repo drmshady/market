@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.2 (Multi-Market Refactor)
+SPUS Quantitative Analyzer v19.3 (Add Ticker Names)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -24,10 +24,12 @@ SPUS Quantitative Analyzer v19.2 (Multi-Market Refactor)
 - FIXED: All failure-path return dictionaries to include default booleans,
   preventing pyarrow crashes in streamlit.
 - FIXED: Changed deprecated yfinance .news to .get_news()
-- ✅ REFACTORED: Now accepts CONFIG object in all major functions
+- REFACTORED: Now accepts CONFIG object in all major functions
   to support multi-market analysis.
-- ✅ NEW: fetch_market_tickers() as a router for ticker sources.
-- ✅ NEW: fetch_tickers_from_local_csv() for TASI and EGX.
+- NEW: fetch_market_tickers() as a router for ticker sources.
+- NEW: fetch_tickers_from_local_csv() for TASI and EGX.
+- ✅ ADDED: 'shortName' (Company Name) to data fetching and parsing.
+- ✅ FIXED: Added 'shortName' to all failure dictionaries.
 """
 
 import requests
@@ -494,7 +496,8 @@ def is_data_valid(data, source="yfinance"):
     
     missing_fields = [f for f in key_fields if info.get(f) is None or info.get(f) == 0 or info.get(f) == "None"]
     
-    if len(missing_fields) > 2: # Allow 2 fields to be missing
+    # Loosen validation for non-US markets (allow 3 missing fields)
+    if len(missing_fields) > 3:
         logging.warning(f"[{info.get('symbol', 'TICKER')}] Data from {source} failed validation. Missing: {missing_fields}")
         return False
         
@@ -539,6 +542,9 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             
             parsed['Sector'] = str(info.get('sector', 'Unknown')) # Force string
             
+            # --- ✅ NEW: Add shortName ---
+            parsed['shortName'] = str(info.get('shortName', ticker_symbol))
+            
             try:
                 parsed['enterpriseToEbitda'] = float(info.get('enterpriseToEbitda'))
             except (TypeError, ValueError):
@@ -557,6 +563,10 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             parsed['priceToBook'] = float(info.get('PriceToBookRatio', 'nan'))
             parsed['marketCap'] = float(info.get('MarketCapitalization', 'nan'))
             parsed['Sector'] = str(info.get('Sector', 'Unknown')) # Force string
+            
+            # --- ✅ NEW: Add shortName ---
+            parsed['shortName'] = str(info.get('Name', ticker_symbol))
+            
             parsed['enterpriseToEbitda'] = float(info.get('EVToEBITDA', 'nan'))
             parsed['freeCashflow'] = np.nan
             parsed['trailingEps'] = float(info.get('EPS', 'nan'))
@@ -840,7 +850,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
                  parsed['next_earnings_date'] = "N/A"
                  parsed['last_dividend_date'] = "N/A"
                  parsed['last_dividend_value'] = np.nan
-                 parsed['next_ex_dividend_date'] = "N/A" # <-- ✅ ADD THIS
+                 parsed['next_ex_dividend_date'] = "N/A"
         
         else: # Alpha Vantage
              parsed['news_list'] = "N/A"
@@ -848,7 +858,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
              parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
-             parsed['next_ex_dividend_date'] = str(info.get('ExDividendDate', 'N/A (AV)')) # <-- ✅ ADD THIS
+             parsed['next_ex_dividend_date'] = str(info.get('ExDividendDate', 'N/A (AV)'))
 
         # --- 8. Risk Management ---
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
@@ -956,7 +966,8 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False),
             'bearish_ob_volume_ok': bool(False),
-            'next_ex_dividend_date': 'N/A'
+            'next_ex_dividend_date': 'N/A',
+            'shortName': 'N/A' # <-- ✅ ADD THIS
         }
 
 
@@ -975,7 +986,8 @@ def process_ticker(ticker, CONFIG):
             'earnings_negative': bool(False), 'earnings_volatile': bool(False),
             'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-            'next_ex_dividend_date': 'N/A'
+            'next_ex_dividend_date': 'N/A',
+            'shortName': 'N/A' # <-- ✅ ADD THIS
         }
         
     # 1. Attempt yfinance
@@ -1013,7 +1025,8 @@ def process_ticker(ticker, CONFIG):
                 'earnings_negative': bool(False), 'earnings_volatile': bool(False),
                 'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
                 'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-                'next_ex_dividend_date': 'N/A'
+                'next_ex_dividend_date': 'N/A',
+                'shortName': 'N/A' # <-- ✅ ADD THIS
             }
             
     # 3. Parse and Calculate
@@ -1033,7 +1046,8 @@ def process_ticker(ticker, CONFIG):
             'earnings_negative': bool(False), 'earnings_volatile': bool(False),
             'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-            'next_ex_dividend_date': 'N/A'
+            'next_ex_dividend_date': 'N/A',
+            'shortName': 'N/A' # <-- ✅ ADD THIS
         }
 
 
