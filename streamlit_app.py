@@ -22,7 +22,7 @@ import pickle
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
     page_title="Multi-Market Quant Analyzer",
-    page_icon="https://www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
+    page_icon="https.www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
     layout="wide"
 )
 
@@ -945,7 +945,7 @@ def run_market_analyzer_app(config_file_name):
                 weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
             else:
                 # If Z_QxM hasn't been generated yet, don't show the slider
-                if factor == "QxM":
+                if factor == "QxM" and 'raw_df' not in st.session_state:
                     st.info("Run analysis to enable 'QxM' factor.")
                 else:
                     logging.warning(f"Factor {factor} defined in weights but not found in data. Skipping slider.")
@@ -1041,8 +1041,8 @@ def run_market_analyzer_app(config_file_name):
     # --- ✅ MODIFIED (P3): norm_weights now includes 'QxM'
     for factor, weight in norm_weights.items():
         z_col = f"Z_{factor}"
-        factor_z_cols.append(z_col)
         if z_col in df.columns:
+            factor_z_cols.append(z_col) # Only add if it exists
             df[f"Weighted_{z_col}"] = df[z_col] * weight
             df['Final Quant Score'] += df[f"Weighted_{z_col}"]
         else:
@@ -1394,6 +1394,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     
     st.divider()
 
+    # --- ✅ MODIFIED (P4): Display AI News Summary ---
     st.subheader("Latest News")
     news_list_str = ticker_data.get('news_list', 'N/A')
     has_recent_news = ticker_data.get('recent_news', 'No') == 'Yes'
@@ -1401,10 +1402,19 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     if has_recent_news:
         st.markdown("🔥 **Recent News Detected (Last 48h)**")
 
-    if news_list_str == "N/A" or not news_list_str:
-        st.info("No news headlines found.")
+    # --- NEW CODE (P4): Display AI Summary ---
+    ai_summary = ticker_data.get('ai_news_summary', 'N/A')
+    if ai_summary and ai_summary not in ["N/A", "No recent news found.", "N/A (AI Summary Disabled)", "N/A (AV)", "N/A (Error)", "N/A (Fatal Error)", "N/A (Data Failed)", "N/A (Parsing Error)", "N/A (Config Error)"]:
+        st.subheader("🤖 AI News Analysis")
+        st.markdown(ai_summary, unsafe_allow_html=True)
     else:
-        with st.expander("View Latest Headlines", expanded=False):
+        st.info("No AI news summary available.")
+    # --- END OF NEW CODE ---
+    
+    if news_list_str == "N/A" or not news_list_str:
+        st.info("No raw news headlines found.")
+    else:
+        with st.expander("View Raw Headlines", expanded=False): # Changed label
             news_list = news_list_str.split(", ")
             for i, headline in enumerate(news_list):
                 st.markdown(f"- {headline}")
@@ -1461,7 +1471,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
         tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
         rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
 
-        st.metric("Take Profit (SMC/Fib)", tp_display, help="Tighter of (Bearish OB) or (Fib 1.618)")
+        st.metric("Take Profit (SMC/Fib)", tp_display, help="Tighter of (Bearish OB) or (ATR/Fib)")
         st.metric("Risk/Reward Ratio", rr_display)
 
     with risk_col3:
