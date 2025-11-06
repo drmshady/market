@@ -2,7 +2,7 @@
   "MARKET_INDEX_TICKER": "^TASI.SR",
   "HALT_IN_BEAR_MARKET": true,
   "TICKER_SOURCE": "LOCAL_CSV",
-  "TICKER_LIST_FILE": "tickers_tasi.csv",
+  "TICKER_LIST_FILE": "tasi_tickers.csv",
   "TICKER_LIMIT": 0,
   "EXCLUDE_TICKERS": [],
   "HISTORICAL_DATA_PERIOD": "5y",
