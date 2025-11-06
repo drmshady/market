@@ -7,7 +7,7 @@
             "Y1HLO4HB8BDBW0V7",
             "E0EKJ63G6JAZPBMW",
             "SG3YG1PP7PK0TAXQ"
-        ]
+        ],"GEMINI_API_KEY": "YOUR_GEMINI_API_KEY_HERE",
     },
     "TICKER_SOURCE": "SPUS_CSV",
     "SPUS_HOLDINGS_CSV_PATH": "TidalFG_Holdings_SPUS.csv",
