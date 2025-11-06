@@ -7,7 +7,8 @@
             "Y1HLO4HB8BDBW0V7",
             "E0EKJ63G6JAZPBMW",
             "SG3YG1PP7PK0TAXQ"
-        ],"GEMINI_API_KEY": "YOUR_GEMINI_API_KEY_HERE",
+        ],
+        "GEMINI_API_KEY": "AIzaSyBEsSgGgXNW6_gewdlpbKEPqP5R0krxIkE"
     },
     "TICKER_SOURCE": "SPUS_CSV",
     "SPUS_HOLDINGS_CSV_PATH": "TidalFG_Holdings_SPUS.csv",
@@ -84,31 +85,4 @@
             ]
         },
         "Quality": {
-            "components": [
-                { "name": "returnOnEquity", "high_is_good": true },
-                { "name": "profitMargins", "high_is_good": true },
-                { "name": "returnOnAssets", "high_is_good": true },
-                { "name": "debtToEquity", "high_is_good": false }
-            ]
-        },
-        "Size": {
-            "components": [
-                { "name": "floatAdjustedMarketCap", "high_is_good": false }
-            ]
-        },
-        "LowVolatility": {
-            "components": [
-                { "name": "volatility_1y", "high_is_good": false },
-                { "name": "beta", "high_is_good": false }
-            ]
-        },
-        "Technical": {
-            "components": [
-                { "name": "RSI", "high_is_good": true },
-                { "name": "ADX", "high_is_good": true },
-                { "name": "Price_vs_SMA50", "high_is_good": true },
-                { "name": "Price_vs_SMA200", "high_is_good": true }
-            ]
-        }
-    }
-}
+            "components":
