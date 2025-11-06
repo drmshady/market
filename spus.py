@@ -464,7 +464,7 @@ def get_ai_news_summary(ticker_symbol, company_name, yf_news_list, CONFIG):
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash') # Use the fast model
+        model = genai.GenerativeModel('gemini-pro') # Use the stable model
 
         # 1. Combine the news headlines from yfinance
         if not yf_news_list:
