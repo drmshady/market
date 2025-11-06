@@ -1,25 +1,25 @@
 {
-  "TICKER_SOURCE": "LOCAL_CSV",
-  "SPUS_HOLDINGS_CSV_PATH": null,
-  "TICKER_LIST_FILE": "tickers_tasi.csv",
-  "MARKET_INDEX_TICKER": "^TASI",
+  "MARKET_INDEX_TICKER": "^TASI.SR",
   "HALT_IN_BEAR_MARKET": true,
+  "TICKER_SOURCE": "LOCAL_CSV",
+  "TICKER_LIST_FILE": "tickers_tasi.csv",
+  "TICKER_LIMIT": 0,
+  "EXCLUDE_TICKERS": [],
   "HISTORICAL_DATA_PERIOD": "5y",
   "SR_LOOKBACK_PERIOD": 90,
   "NEWS_LOOKBACK_HOURS": 48,
-  "TICKER_LIMIT": 0,
   "MAX_CONCURRENT_WORKERS": 10,
-  "EXCLUDE_TICKERS": [],
   "DATA_PROVIDERS": {
-    "ALPHA_VANTAGE_API_KEYS": [
-      "YOUR_API_KEY_1",
-      "YOUR_API_KEY_2"
-    ]
+    "ALPHA_VANTAGE_API_KEYS": ["YOUR_API_KEY_1", "YOUR_API_KEY_2"]
   },
   "LOGGING": {
     "LOG_FILE_PATH": "tasi_analysis.log",
-    "EXCEL_FILE_PATH": "TASI_Quant_Report.xlsx",
+    "EXCEL_FILE_PATH": "tasi_quantitative_report.xlsx",
     "RESULTS_DIR": "results_history_tasi"
+  },
+  "STATISTICAL": {
+    "WINSORIZE_LIMIT": 0.05,
+    "MIN_SECTOR_SIZE_FOR_MEDIAN": 3
   },
   "DEFAULT_FACTOR_WEIGHTS": {
     "Value": 0.20,
@@ -30,21 +30,12 @@
     "Technical": 0.15,
     "QxM": 0.10
   },
-  "RISK_MANAGEMENT": {
-    "ATR_STOP_LOSS_MULTIPLIER": 1.5,
-    "RISK_PER_TRADE_AMOUNT": 2000,
-    "USE_CUT_LOSS_FILTER": true
-  },
-  "STATISTICAL": {
-    "WINSORIZE_LIMIT": 0.05,
-    "MIN_SECTOR_SIZE_FOR_MEDIAN": 3
-  },
   "TECHNICALS": {
     "SHORT_MA_WINDOW": 50,
     "LONG_MA_WINDOW": 200,
     "RSI_WINDOW": 14,
-    "ADX_WINDOW": 14,
     "ATR_WINDOW": 14,
+    "ADX_WINDOW": 14,
     "MACD_SHORT_SPAN": 12,
     "MACD_LONG_SPAN": 26,
     "MACD_SIGNAL_SPAN": 9,
@@ -57,77 +48,53 @@
       "ENTRY_PROXIMITY_PERCENT": 2.0
     }
   },
+  "RISK_MANAGEMENT": {
+    "ATR_STOP_LOSS_MULTIPLIER": 1.5,
+    "RISK_PER_TRADE_AMOUNT": 2000,
+    "USE_CUT_LOSS_FILTER": true
+  },
   "FACTOR_DEFINITIONS": {
     "Value": {
       "components": [
-        {
-          "name": "forwardPE",
-          "high_is_good": false
-        },
-        {
-          "name": "priceToBook",
-          "high_is_good": false
-        }
+        {"name": "forwardPE", "high_is_good": false},
+        {"name": "priceToBook", "high_is_good": false},
+        {"name": "enterpriseToEbitda", "high_is_good": false},
+        {"name": "P/FCF", "high_is_good": false}
       ]
     },
     "Momentum": {
       "components": [
-        {
-          "name": "momentum_12m",
-          "high_is_good": true
-        },
-        {
-          "name": "momentum_3m",
-          "high_is_good": true
-        }
+        {"name": "momentum_12m", "high_is_good": true},
+        {"name": "momentum_3m", "high_is_good": true},
+        {"name": "risk_adjusted_momentum", "high_is_good": true}
       ]
     },
     "Quality": {
       "components": [
-        {
-          "name": "returnOnEquity",
-          "high_is_good": true
-        },
-        {
-          "name": "profitMargins",
-          "high_is_good": true
-        },
-        {
-          "name": "debtToEquity",
-          "high_is_good": false
-        }
+        {"name": "returnOnEquity", "high_is_good": true},
+        {"name": "returnOnAssets", "high_is_good": true},
+        {"name": "debtToEquity", "high_is_good": false},
+        {"name": "profitMargins", "high_is_good": true},
+        {"name": "earnings_volatile", "high_is_good": false},
+        {"name":F: "earnings_negative", "high_is_good": false}
       ]
     },
     "Size": {
       "components": [
-        {
-          "name": "marketCap",
-          "high_is_good": false
-        }
+        {"name": "marketCap", "high_is_good": false}
       ]
     },
     "LowVolatility": {
       "components": [
-        {
-          "name": "beta",
-          "high_is_good": false
-        },
-        {
-          "name": "volatility_1y",
-          "high_is_good": false
-        }
+        {"name": "beta", "high_is_good": false},
+        {"name": "volatility_1y", "high_is_good": false}
       ]
     },
     "Technical": {
       "components": [
-        {
-          "name": "RSI",
-          "high_is_good": true
-        },
-        {
-          "name": "Price_vs_SMA50",
-          "high_is_good": true
-        }
+        {"name": "RSI", "high_is_good": false},
+        {"name": "Price_vs_SMA50", "high_is_good": true},
+        {"name": "Price_vs_SMA200", "high_is_good": true}
       ]
     }
   }
