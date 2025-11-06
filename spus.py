@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.7 (Fix Gemini Model Name Again)
+SPUS Quantitative Analyzer v19.8 (Holistic AI Analysis)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -35,9 +35,10 @@ SPUS Quantitative Analyzer v19.7 (Fix Gemini Model Name Again)
      uses Bearish OB as a potential Take Profit target.
 - ✅ ADDED (P2): MACD_EXIT_SIGNAL added for exit rule logic.
 - ✅ NEW (P4): Added google.generativeai import.
-- ✅ NEW (P4): Added get_ai_news_summary() function.
-- ✅ MODIFIED (P4): parse_ticker_data() now calls AI summary function.
-- ✅ FIXED (P4): Changed 'gemini-pro' to 'gemini-1.0-pro' to fix 404 error.
+- ✅ MODIFIED (P4): Renamed get_ai_news_summary to get_ai_stock_analysis
+- ✅ MODIFIED (P4): AI function now accepts all parsed_data for holistic summary
+- ✅ MODIFIED (P4): Moved AI function call to the end of parse_ticker_data
+- ✅ FIXED (P4): Set model to 'gemini-1.0-pro' for compatibility
 """
 
 import requests
@@ -453,10 +454,10 @@ def find_order_blocks(hist_df_full, ticker, CONFIG):
         }
         return ob_data_default
 
-# --- ✅ NEW (P4): AI News Summary Function ---
-def get_ai_news_summary(ticker_symbol, company_name, yf_news_list, CONFIG):
+# --- ✅ NEW (P4): AI Stock Analysis Function ---
+def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data, CONFIG):
     """
-    Fetches news, combines them, and sends to Gemini API for summarization.
+    Takes all parsed data and news, sending them to Gemini API for a holistic summary.
     """
     api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY")
     if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
@@ -466,29 +467,50 @@ def get_ai_news_summary(ticker_symbol, company_name, yf_news_list, CONFIG):
     try:
         genai.configure(api_key=api_key)
         
-        # --- ✅ FIX (P4): Changed model name ---
+        # --- ✅ FIX (P4): Changed model name for compatibility ---
         model = genai.GenerativeModel('gemini-1.0-pro') # Use the stable model
         # --- END FIX ---
 
         # 1. Combine the news headlines from yfinance
-        if not yf_news_list:
+        news_text = "No recent news found."
+        if yf_news_list:
+            headlines = [item.get('title', '') for item in yf_news_list]
+            news_text = "\n".join(headlines)
+        else:
             logging.info(f"[{ticker_symbol}] No news headlines found by yfinance.")
-            return "No recent news found."
 
-        # Convert list of dicts to a simple text block
-        headlines = [item.get('title', '') for item in yf_news_list]
-        news_text = "\n".join(headlines)
+        # 2. Extract key quantitative data
+        last_price = parsed_data.get('last_price', 'N/A')
+        sector = parsed_data.get('Sector', 'N/A')
+        valuation = parsed_data.get('grahamValuation', 'N/A')
+        trend = parsed_data.get('Trend (50/200 Day MA)', 'N/A')
+        macd = parsed_data.get('MACD_Signal', 'N/A')
+        smc_signal = parsed_data.get('entry_signal', 'N/A')
+        rr_ratio = parsed_data.get('Risk/Reward Ratio', 'N/A')
+        if isinstance(rr_ratio, float):
+            rr_ratio = f"{rr_ratio:.2f}"
 
-        # 2. Create the prompt (based on your example)
+
+        # 3. Create the holistic prompt
         prompt = f"""
-        Task: Analyze the following recent news headlines for the company '{company_name}' (Ticker: {ticker_symbol}) and generate a brief summary for an investor.
-        
+        Task: Act as a stock market analyst. Analyze the following quantitative data and qualitative news headlines for the company '{company_name}' (Ticker: {ticker_symbol}). Generate a brief, holistic analysis for an investor.
+
         Output Format (Use Arabic):
-        1.  **الأخبار العاجلة أو التشغيلية (إن وجدت):** (Summarize any major operational news like factory incidents, product launches, etc.)
-        2.  **الأخبار المالية وتحليل السوق (إن وجدت):** (Summarize any financial news like earnings, analyst ratings, or market sentiment.)
-        3.  **الخلاصة:** (A 1-2 sentence conclusion of the overall news sentiment.)
-        
-        News Headlines to Analyze:
+        1.  **الملخص التنفيذي:** (A 1-2 sentence summary of the stock's current situation.)
+        2.  **التحليل الفني (Technical Analysis):** (Analyze the trend, MACD, and SMC signal. Is it a good time to buy?)
+        3.  **التحليل الأساسي (Fundamental Analysis):** (Analyze the valuation and sector.)
+        4.  **تحليل المخاطر والأخبار:** (Summarize the key news and the Risk/Reward ratio.)
+
+        Key Quantitative Data:
+        -   **Last Price:** {last_price}
+        -   **Sector:** {sector}
+        -   **Valuation (Graham):** {valuation}
+        -   **MA Trend (50/200):** {trend}
+        -   **MACD Signal:** {macd}
+        -   **SMC Entry Signal:** {smc_signal}
+        -   **Risk/Reward Ratio:** {rr_ratio}
+
+        Recent News Headlines:
         ---
         {news_text}
         ---
@@ -496,7 +518,7 @@ def get_ai_news_summary(ticker_symbol, company_name, yf_news_list, CONFIG):
         Analysis (in Arabic):
         """
 
-        # 3. Call the API
+        # 4. Call the API
         response = model.generate_content(prompt)
         
         # Clean up the response
@@ -926,11 +948,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
                 parsed['news_list'] = str(news_list_str) # Force string
                 parsed['recent_news'] = str(news_str) # Force string
 
-                # --- NEW CODE (P4): Call AI Summary ---
-                company_short_name = parsed.get('shortName', ticker_symbol)
-                # We pass the raw 'news' list (list of dicts)
-                parsed['ai_news_summary'] = get_ai_news_summary(ticker_symbol, company_short_name, news, CONFIG)
-                # --- END OF NEW CODE (P4) ---
+                # --- AI Summary Call moved to the end of the function ---
 
                 last_div_date_ts = info.get('lastDividendDate')
                 last_div_value = info.get('lastDividendValue')
@@ -970,7 +988,6 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
                  logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
                  parsed['news_list'] = "N/A"
                  parsed['recent_news'] = "N/A"
-                 parsed['ai_news_summary'] = "N/A (Error)" # <-- NEW (P4)
                  parsed['next_earnings_date'] = "N/A"
                  parsed['last_dividend_date'] = "N/A"
                  parsed['last_dividend_value'] = np.nan
@@ -979,7 +996,6 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         else: # Alpha Vantage
              parsed['news_list'] = "N/A"
              parsed['recent_news'] = "N/A (AV)"
-             parsed['ai_news_summary'] = "N/A (AV)" # <-- NEW (P4)
              parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
@@ -1114,6 +1130,17 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         if 'hist_df' in parsed:
             del parsed['hist_df'] 
 
+        # --- NEW (P4) - FINAL AI ANALYSIS STEP ---
+        # This is called last so the AI has all data points (like R/R ratio)
+        try:
+            company_short_name = parsed.get('shortName', ticker_symbol)
+            news_list = earnings_data.get('news', []) # Get the news list again
+            parsed['ai_holistic_analysis'] = get_ai_stock_analysis(ticker_symbol, company_short_name, news_list, parsed, CONFIG)
+        except Exception as ai_e:
+            logging.error(f"[{ticker_symbol}] Fatal error calling get_ai_stock_analysis: {ai_e}")
+            parsed['ai_holistic_analysis'] = "N/A (AI Analysis Failed)"
+        # --- END NEW (P4) ---
+
         return parsed
         
     except Exception as e:
@@ -1133,7 +1160,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             'bearish_ob_volume_ok': bool(False),
             'next_ex_dividend_date': 'N/A',
             'shortName': 'N/A', # <-- ✅ ADD THIS
-            'ai_news_summary': 'N/A (Fatal Error)' # <-- NEW (P4)
+            'ai_holistic_analysis': 'N/A (Fatal Error)' # <-- NEW (P4)
         }
 
 
@@ -1154,7 +1181,7 @@ def process_ticker(ticker, CONFIG):
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
             'next_ex_dividend_date': 'N/A',
             'shortName': 'N/A', # <-- ✅ ADD THIS
-            'ai_news_summary': 'N/A (Config Error)' # <-- NEW (P4)
+            'ai_holistic_analysis': 'N/A (Config Error)' # <-- NEW (P4)
         }
         
     # 1. Attempt yfinance
@@ -1195,7 +1222,7 @@ def process_ticker(ticker, CONFIG):
                 'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
                 'next_ex_dividend_date': 'N/A',
                 'shortName': 'N/A', # <-- ✅ ADD THIS
-                'ai_news_summary': 'N/A (Data Failed)' # <-- NEW (P4)
+                'ai_holistic_analysis': 'N/A (Data Failed)' # <-- NEW (P4)
             }
             
     # 3. Parse and Calculate
@@ -1217,7 +1244,7 @@ def process_ticker(ticker, CONFIG):
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
             'next_ex_dividend_date': 'N/A',
             'shortName': 'N/A', # <-- ✅ ADD THIS
-            'ai_news_summary': 'N/A (Parsing Error)' # <-- NEW (P4)
+            'ai_holistic_analysis': 'N/A (Parsing Error)' # <-- NEW (P4)
         }
 
 
