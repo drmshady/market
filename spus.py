@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.8 (Holistic AI Analysis)
+SPUS Quantitative Analyzer v19.10 (Force v1 API)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -38,7 +38,7 @@ SPUS Quantitative Analyzer v19.8 (Holistic AI Analysis)
 - ✅ MODIFIED (P4): Renamed get_ai_news_summary to get_ai_stock_analysis
 - ✅ MODIFIED (P4): AI function now accepts all parsed_data for holistic summary
 - ✅ MODIFIED (P4): Moved AI function call to the end of parse_ticker_data
-- ✅ FIXED (P4): Set model to 'gemini-1.0-pro' for compatibility
+- ✅ FIXED (P4): Set model to 'gemini-1.5-pro-latest' to force v1 API
 """
 
 import requests
@@ -467,8 +467,8 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
     try:
         genai.configure(api_key=api_key)
         
-        # --- ✅ FIX (P4): Changed model name for compatibility ---
-        model = genai.GenerativeModel('gemini-1.0-pro') # Use the stable model
+        # --- ✅ FIX (P4): Changed model name ---
+        model = genai.GenerativeModel('gemini-1.5-pro-latest') # Use the LATEST model
         # --- END FIX ---
 
         # 1. Combine the news headlines from yfinance
