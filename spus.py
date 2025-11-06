@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.5 (Add AI News Summary)
+SPUS Quantitative Analyzer v19.6 (Fix Gemini Model Name)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -37,6 +37,7 @@ SPUS Quantitative Analyzer v19.5 (Add AI News Summary)
 - ✅ NEW (P4): Added google.generativeai import.
 - ✅ NEW (P4): Added get_ai_news_summary() function.
 - ✅ MODIFIED (P4): parse_ticker_data() now calls AI summary function.
+- ✅ FIXED (P4): Changed 'gemini-1.5-flash' to 'gemini-pro' to fix 404 error.
 """
 
 import requests
@@ -464,7 +465,10 @@ def get_ai_news_summary(ticker_symbol, company_name, yf_news_list, CONFIG):
 
     try:
         genai.configure(api_key=api_key)
+        
+        # --- ✅ FIX (P4): Changed model name ---
         model = genai.GenerativeModel('gemini-pro') # Use the stable model
+        # --- END FIX ---
 
         # 1. Combine the news headlines from yfinance
         if not yf_news_list:
