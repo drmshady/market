@@ -22,7 +22,7 @@ import pickle
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
     page_title="Multi-Market Quant Analyzer",
-    page_icon="https.www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
+    page_icon="https://www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
     layout="wide"
 )
 
@@ -35,11 +35,12 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 try:
-    # --- ✅ MODIFIED: We import the *refactored* functions ---
+    # --- ✅ MODIFIED (P1): Import check_market_regime ---
     from spus import (
         load_config,
         fetch_market_tickers, # <-- Renamed/new function
-        process_ticker
+        process_ticker,
+        check_market_regime # <-- ADDED
     )
 except ImportError as e:
     st.error(f"Error: Failed to import 'spus.py'. Details: {e}")
@@ -168,6 +169,7 @@ def calculate_robust_zscore_grouped(group_series):
     z_score = (series - median) / (1.4826 * mad)
     return z_score
 
+# --- ✅ MODIFIED (P3): Added Factor Interaction Logic ---
 def calculate_all_z_scores(df, config):
     """
     Calculates sector-relative Z-scores for all factor components.
@@ -228,9 +230,31 @@ def calculate_all_z_scores(df, config):
         else:
             df_analysis[f"Z_{factor}"] = 0.0
             
+    # --- MODIFICATION START (P3): Add Interaction Factors ---
+    logging.info("Calculating Factor Interaction Scores (QxM)...")
+    
+    # 1. Quality x Momentum (QxM)
+    z_quality_col = 'Z_Quality'
+    z_momentum_col = 'Z_Momentum'
+    qxm_raw_col = 'QxM_raw'
+    z_qxm_col = 'Z_QxM' # This is the new factor name
+
+    if z_quality_col in df_analysis.columns and z_momentum_col in df_analysis.columns:
+        # Create the raw interaction score
+        df_analysis[qxm_raw_col] = df_analysis[z_quality_col] * df_analysis[z_momentum_col]
+        
+        # Normalize the interaction score itself using the same robust z-score logic
+        # This treats the raw QxM score as its own "component"
+        df_analysis[z_qxm_col] = df_analysis.groupby('Sector')[qxm_raw_col].transform(calculate_robust_zscore_grouped)
+        df_analysis[z_qxm_col] = df_analysis[z_qxm_col].fillna(0.0)
+    else:
+        df_analysis[z_qxm_col] = 0.0
+        
+    # --- MODIFICATION END (P3) ---
+            
     return df_analysis
 
-
+# --- ✅ MODIFIED (P1): Added Market Regime Check ---
 def generate_quant_report(CONFIG, progress_callback=None):
     """
     Core logic, decoupled from Streamlit.
@@ -245,13 +269,26 @@ def generate_quant_report(CONFIG, progress_callback=None):
         logging.info(f"Progress: {percent*100:.0f}% - {text}")
 
     report_progress(0.01, "Starting analysis...")
+
+    # --- 1. Check Market Regime (NEW STEP - P1) ---
+    report_progress(0.02, "(1/8) Checking market regime...")
+    market_regime = check_market_regime(CONFIG)
+    report_progress(0.04, f"(1/8) Market Regime: {market_regime}")
+
+    # Store in session state to display on UI
+    st.session_state.market_regime = market_regime 
     
-    # --- 1. Fetch Tickers ---
-    report_progress(0.05, "(1/7) Fetching market ticker list...")
+    if market_regime == "BEARISH" and CONFIG.get('HALT_IN_BEAR_MARKET', True):
+        report_progress(1.0, f"Analysis Halted: Market Regime is {market_regime}.")
+        # Return empty but valid data structures
+        return pd.DataFrame(), {}, {}, "BEARISH" # Return regime status
+        
+    # --- 2. Fetch Tickers (WAS STEP 1) ---
+    report_progress(0.05, "(2/8) Fetching market ticker list...")
     ticker_symbols = fetch_market_tickers(CONFIG) # <-- ✅ MODIFIED
     if not ticker_symbols:
         report_progress(1.0, "Error: No ticker symbols found. Analysis cancelled.")
-        return None, None, None
+        return None, None, None, market_regime
         
     exclude_tickers = CONFIG.get('EXCLUDE_TICKERS', [])
     ticker_symbols = [t for t in ticker_symbols if t not in exclude_tickers]
@@ -259,11 +296,11 @@ def generate_quant_report(CONFIG, progress_callback=None):
     limit = CONFIG.get('TICKER_LIMIT', 0)
     if limit > 0:
         ticker_symbols = ticker_symbols[:limit]
-        report_progress(0.07, f"(1/7) Analysis limited to {limit} tickers.")
+        report_progress(0.07, f"(2/8) Analysis limited to {limit} tickers.")
     
-    # --- 2. Process Tickers Concurrently (with Caching) ---
+    # --- 3. Process Tickers Concurrently (WAS STEP 2) ---
     MAX_WORKERS = CONFIG.get('MAX_CONCURRENT_WORKERS', 10)
-    report_progress(0.1, f"(2/7) Checking cache for {len(ticker_symbols)} tickers...")
+    report_progress(0.1, f"(3/8) Checking cache for {len(ticker_symbols)} tickers...")
 
     CACHE_DIR = os.path.join(BASE_DIR, "cache")
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -295,7 +332,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
         tickers_to_fetch.append(ticker)
     
     cached_count = len(results_list)
-    report_progress(0.15, f"(2/7) Loaded {cached_count} tickers from cache. Fetching {len(tickers_to_fetch)} new tickers...")
+    report_progress(0.15, f"(3/8) Loaded {cached_count} tickers from cache. Fetching {len(tickers_to_fetch)} new tickers...")
     
     processed_count = 0
     total_to_fetch = len(tickers_to_fetch)
@@ -330,26 +367,26 @@ def generate_quant_report(CONFIG, progress_callback=None):
             processed_count += 1
             if total_to_fetch > 0:
                 percent_done = 0.15 + (0.55 * (processed_count / total_to_fetch)) 
-                report_progress(percent_done, f"(2/7) Processing: {ticker} ({processed_count}/{total_to_fetch})")
+                report_progress(percent_done, f"(3/8) Processing: {ticker} ({processed_count}/{total_to_fetch})")
 
     end_time = time.time()
-    report_progress(0.7, f"(3/7) Data fetch complete. Time taken: {end_time - start_time:.2f}s")
+    report_progress(0.7, f"(4/8) Data fetch complete. Time taken: {end_time - start_time:.2f}s")
 
     if not results_list:
         report_progress(1.0, "Error: No data successfully processed. Analysis cancelled.")
-        return None, None, None
+        return None, None, None, market_regime
         
     results_df = pd.DataFrame(results_list)
     results_df.set_index('ticker', inplace=True)
     
-    report_progress(0.75, "(4/7) Risk metrics calculated in spus.py.")
+    report_progress(0.75, "(5/8) Risk metrics calculated in spus.py.")
     
-    # --- 4. Factor Z-Score Calculation ---
-    report_progress(0.8, "(5/7) Calculating robust Z-Scores...")
+    # --- 6. Factor Z-Score Calculation (WAS STEP 4) ---
+    report_progress(0.8, "(6/8) Calculating robust Z-Scores...")
     results_df = calculate_all_z_scores(results_df, CONFIG)
     
-    # --- 5. Save Reports (Excel, PDF, CSV) ---
-    report_progress(0.9, "(6/7) Generating reports...")
+    # --- 7. Save Reports (Excel, PDF, CSV) (WAS STEP 5) ---
+    report_progress(0.9, "(7/8) Generating reports...")
     
     results_df.sort_values(by='Z_Value', ascending=False, inplace=True)
 
@@ -451,7 +488,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
 
     report_progress(1.0, "Analysis complete.")
     
-    return results_df, all_histories, data_sheets
+    return results_df, all_histories, data_sheets, market_regime
 
 # --- ⭐️ 4. Streamlit UI Functions ⭐️ ---
 
@@ -474,18 +511,22 @@ def load_analysis_data(config_file_name, run_timestamp):
     _CONFIG = load_config(config_file_name)
     if _CONFIG is None:
         st.error(f"Failed to load {config_file_name}")
-        return None, None, None, None
+        return None, None, None, None, None
     
-    df, histories, sheets = generate_quant_report(_CONFIG, st_progress_callback)
+    df, histories, sheets, market_regime = generate_quant_report(_CONFIG, st_progress_callback)
     
     progress_bar.empty()
     status_text.empty()
     
     if df is None:
         st.error("Analysis failed. Check logs.")
-        return None, None, None, None
+        return None, None, None, None, None
+    
+    # Handle the case where analysis was halted
+    if market_regime == "BEARISH" and df.empty:
+        st.warning(f"Analysis Halted: Market Regime is {market_regime}.")
         
-    return df, histories, sheets, datetime.now(SAUDI_TZ).timestamp()
+    return df, histories, sheets, datetime.now(SAUDI_TZ).timestamp(), market_regime
 
 def get_latest_reports(excel_base_path):
     """Gets paths for the latest Excel and PDF reports."""
@@ -799,6 +840,8 @@ def run_market_analyzer_app(config_file_name):
         st.session_state.active_tab = "🏆 Quant Rankings"
     if 'portfolio' not in st.session_state:
         st.session_state.portfolio = []
+    if 'market_regime' not in st.session_state:
+        st.session_state.market_regime = "UNKNOWN"
         
     # --- "Go Back" Button ---
     if st.button("⬅️ Go Back to Market Selection"):
@@ -877,9 +920,11 @@ def run_market_analyzer_app(config_file_name):
         
         st.divider()
 
+        # --- ✅ MODIFIED (P3): Added 'QxM' to default weights ---
         default_weights = CONFIG.get('DEFAULT_FACTOR_WEIGHTS', {
-            "Value": 0.20, "Momentum": 0.20, "Quality": 0.20,
-            "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
+            "Value": 0.20, "Momentum": 0.15, "Quality": 0.15,
+            "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15,
+            "QxM": 0.10 # <-- New Factor Weight (example)
         })
         
         def callback_reset_weights():
@@ -895,7 +940,16 @@ def run_market_analyzer_app(config_file_name):
         
         weights = {}
         for factor, default in default_weights.items():
-            weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
+            # Check if the factor Z-score column exists before adding a slider
+            if f"Z_{factor}" in st.session_state.get('raw_df', pd.DataFrame()).columns:
+                weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
+            else:
+                # If Z_QxM hasn't been generated yet, don't show the slider
+                if factor == "QxM":
+                    st.info("Run analysis to enable 'QxM' factor.")
+                else:
+                    logging.warning(f"Factor {factor} defined in weights but not found in data. Skipping slider.")
+
             
         total_weight = sum(weights.values())
         norm_weights = {f: (w / total_weight) if total_weight > 0 else 0 for f, w in weights.items()}
@@ -934,10 +988,17 @@ def run_market_analyzer_app(config_file_name):
 
 
     # --- Main Page ---
-    st.title("Quantitative Dashboard")
+    
+    # --- ✅ MODIFIED (P1): Display Market Regime ---
+    regime_status = st.session_state.get('market_regime', 'N/A')
+    regime_color = "red" if regime_status == "BEARISH" else "green" if regime_status == "BULLISH" else "orange"
+    
+    st.title(f"Quantitative Dashboard")
+    st.markdown(f"**Market Regime Status:** <span style='color:{regime_color}; font-weight: 600;'>{regime_status}</span>", unsafe_allow_html=True)
+    
     
     # --- ✅ MODIFIED: Load Data using config_file_name as key ---
-    base_raw_df, base_histories, base_sheets, base_last_run_time = load_analysis_data(config_file_name, st.session_state.run_timestamp)
+    base_raw_df, base_histories, base_sheets, base_last_run_time, base_market_regime = load_analysis_data(config_file_name, st.session_state.run_timestamp)
     
     # Check for cache invalidation
     if 'raw_df' not in st.session_state or st.session_state.get('base_run_timestamp') != st.session_state.run_timestamp:
@@ -949,15 +1010,21 @@ def run_market_analyzer_app(config_file_name):
         st.session_state.all_histories = base_histories.copy()
         st.session_state.data_sheets = base_sheets
         st.session_state.last_run_time = base_last_run_time
+        st.session_state.market_regime = base_market_regime # Store regime from the run
         st.session_state.base_run_timestamp = st.session_state.run_timestamp
     
     raw_df = st.session_state.raw_df
     all_histories = st.session_state.all_histories
     last_run_time = st.session_state.last_run_time
     
+    # This handles the "BEARISH" halt case
     if raw_df is None or raw_df.empty:
-        st.error("No data available in session state.")
-        st.stop()
+        if st.session_state.market_regime == "BEARISH":
+            st.warning(f"Analysis Halted: Market Regime is BEARISH. No buy signals will be generated.")
+            st.stop()
+        else:
+            st.error("No data available in session state.")
+            st.stop()
         
     st.success(f"Data loaded from analysis run at: {datetime.fromtimestamp(last_run_time, SAUDI_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
@@ -970,6 +1037,8 @@ def run_market_analyzer_app(config_file_name):
 
     df['Final Quant Score'] = 0.0
     factor_z_cols = []
+    
+    # --- ✅ MODIFIED (P3): norm_weights now includes 'QxM'
     for factor, weight in norm_weights.items():
         z_col = f"Z_{factor}"
         factor_z_cols.append(z_col)
@@ -977,6 +1046,7 @@ def run_market_analyzer_app(config_file_name):
             df[f"Weighted_{z_col}"] = df[z_col] * weight
             df['Final Quant Score'] += df[f"Weighted_{z_col}"]
         else:
+            # This will now correctly log if Z_QxM is missing on first run
             logging.warning(f"Z-Score column {z_col} not found in dataframe.")
 
     st.subheader("Filters")
@@ -1151,11 +1221,12 @@ def run_market_analyzer_app(config_file_name):
             st.subheader("Top 20 Overview")
             
             # --- ✅ MODIFIED: Add 'shortName' ---
+            # --- ✅ MODIFIED (P3): Added 'Z_QxM' ---
             display_cols = [
                 'shortName', 'Last Price', 'Sector', 
                 'entry_signal',
                 'Final Quant Score', 
-                'Z_Value', 'Z_Momentum', 'Z_Quality', 
+                'Z_Value', 'Z_Momentum', 'Z_Quality', 'Z_QxM',
                 'Z_Size', 'Z_LowVolatility', 'Z_Technical',
                 'Risk/Reward Ratio',
                 'Position Size (USD)',
@@ -1178,6 +1249,7 @@ def run_market_analyzer_app(config_file_name):
                     "Z_Value": st.column_config.NumberColumn(format="%.2f"),
                     "Z_Momentum": st.column_config.NumberColumn(format="%.2f"),
                     "Z_Quality": st.column_config.NumberColumn(format="%.2f"),
+                    "Z_QxM": st.column_config.NumberColumn(format="%.2f", help="Quality x Momentum Interaction"), # <-- ✅ ADDED
                     "Z_Size": st.column_config.NumberColumn(format="%.2f"),
                     "Z_LowVolatility": st.column_config.NumberColumn(format="%.2f"),
                     "Z_Technical": st.column_config.NumberColumn(format="%.2f"),
@@ -1226,6 +1298,7 @@ def run_market_analyzer_app(config_file_name):
                 st.subheader("Factor Correlation Heatmap")
                 st.info("This shows if factors are redundant (highly correlated). Aim for low values.")
                 
+                # --- ✅ MODIFIED (P3): 'factor_z_cols' now dynamically includes 'Z_QxM'
                 corr_matrix = filtered_df[factor_z_cols].corr()
                 corr_heatmap = px.imshow(
                     corr_matrix,
@@ -1241,6 +1314,7 @@ def run_market_analyzer_app(config_file_name):
                 st.subheader("Sector Median Factor Strength")
                 st.info("This shows which factors are strongest/weakest for each sector.")
                 
+                # --- ✅ MODIFIED (P3): 'factor_z_cols' now dynamically includes 'Z_QxM'
                 sector_median_factors = filtered_df.groupby('Sector')[factor_z_cols].median()
                 sector_heatmap = px.imshow(
                     sector_median_factors,
@@ -1348,10 +1422,12 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
             
     with chart_col2:
         st.subheader("Factor Profile")
+        # --- ✅ MODIFIED (P3): 'factor_z_cols' now dynamically includes 'Z_QxM'
         radar_chart = create_radar_chart(ticker_data, factor_z_cols)
         st.plotly_chart(radar_chart, use_container_width=True)
         
         with st.expander("Factor Contribution Breakdown", expanded=False):
+            # --- ✅ MODIFIED (P3): 'norm_weights' now dynamically includes 'QxM'
             for factor in norm_weights.keys():
                 z_col = f"Z_{factor}"
                 w_z_col = f"Weighted_{z_col}"
@@ -1379,12 +1455,13 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
         st.metric(f"Final Stop ({sl_method})", f"${sl_final:.2f}" if pd.notna(sl_final) else "N/A", help=risk_display)
 
     with risk_col2:
+        # --- ✅ MODIFIED (P2): This value is now the (better) SMC-aware target
         tp_price = ticker_data.get('Take Profit Price', np.nan)
         rr_ratio = ticker_data.get('Risk/Reward Ratio', np.nan)
         tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
         rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
 
-        st.metric("Take Profit (Fib 1.618)", tp_display)
+        st.metric("Take Profit (SMC/Fib)", tp_display, help="Tighter of (Bearish OB) or (Fib 1.618)")
         st.metric("Risk/Reward Ratio", rr_display)
 
     with risk_col3:
@@ -1711,7 +1788,7 @@ def run_analysis_for_scheduler():
     )
     
     try:
-        df, _, _ = generate_quant_report(CONFIG, print_progress_callback)
+        df, _, _, _ = generate_quant_report(CONFIG, print_progress_callback) # Added _ for market_regime
         if df is not None:
             print(f"Successfully generated report for {len(df)} tickers.")
         else:
@@ -1764,7 +1841,8 @@ def main():
     else:
         st.info("Please select a market from the dropdown to begin analysis.")
         try:
-            st.image("logo.jpg")
+            # --- ✅ LOGO FIX: Set width on home page logo ---
+            st.image("logo.jpg", width=300)
         except:
             pass # Ignore if no logo
 
