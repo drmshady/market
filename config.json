@@ -85,4 +85,31 @@
             ]
         },
         "Quality": {
-            "components":
+            "components": [
+                { "name": "returnOnEquity", "high_is_good": true },
+                { "name": "profitMargins", "high_is_good": true },
+                { "name": "returnOnAssets", "high_is_good": true },
+                { "name": "debtToEquity", "high_is_good": false }
+            ]
+        },
+        "Size": {
+            "components": [
+                { "name": "floatAdjustedMarketCap", "high_is_good": false }
+            ]
+        },
+        "LowVolatility": {
+            "components": [
+                { "name": "volatility_1y", "high_is_good": false },
+                { "name": "beta", "high_is_good": false }
+            ]
+        },
+        "Technical": {
+            "components": [
+                { "name": "RSI", "high_is_good": true },
+                { "name": "ADX", "high_is_good": true },
+                { "name": "Price_vs_SMA50", "high_is_good": true },
+                { "name": "Price_vs_SMA200", "high_is_good": true }
+            ]
+        }
+    }
+}
