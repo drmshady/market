@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.4 (Market Regime & SMC Exits)
+SPUS Quantitative Analyzer v19.5 (Add AI News Summary)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -34,6 +34,9 @@ SPUS Quantitative Analyzer v19.4 (Market Regime & SMC Exits)
 - ✅ MODIFIED (P2): parse_ticker_data() Risk Management section
      uses Bearish OB as a potential Take Profit target.
 - ✅ ADDED (P2): MACD_EXIT_SIGNAL added for exit rule logic.
+- ✅ NEW (P4): Added google.generativeai import.
+- ✅ NEW (P4): Added get_ai_news_summary() function.
+- ✅ MODIFIED (P4): parse_ticker_data() now calls AI summary function.
 """
 
 import requests
@@ -49,6 +52,8 @@ import numpy as np
 from bs4 import BeautifulSoup
 import random
 from scipy.signal import argrelextrema 
+import google.generativeai as genai # <-- NEW (P4)
+import textwrap
 
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +78,8 @@ def load_config(path='config.json'):
 
 def fetch_spus_tickers_from_csv(local_path):
     """Helper to parse the local SPUS CSV file."""
-    ticker_column_name = 'StockTicker'
+    # --- MODIFIED: Use 'StockTicker' from the user's config.json ---
+    ticker_column_name = 'StockTicker' 
     if not os.path.exists(local_path):
         logging.error(f"Local SPUS holdings file not found at: {local_path}")
         return None
@@ -98,7 +104,12 @@ def fetch_spus_tickers_from_csv(local_path):
     
     if ticker_column_name not in holdings_df.columns:
         logging.error(f"CSV from {local_path} found, but '{ticker_column_name}' column not found.")
-        return None
+        # --- FALLBACK: Try finding 'ticker' ---
+        if 'ticker' in holdings_df.columns:
+            logging.warning("Found 'ticker' column, using it as fallback.")
+            ticker_column_name = 'ticker'
+        else:
+            return None
     
     return holdings_df[ticker_column_name].tolist()
 
@@ -440,6 +451,58 @@ def find_order_blocks(hist_df_full, ticker, CONFIG):
             'last_swing_low': np.nan, 'last_swing_high': np.nan
         }
         return ob_data_default
+
+# --- ✅ NEW (P4): AI News Summary Function ---
+def get_ai_news_summary(ticker_symbol, company_name, yf_news_list, CONFIG):
+    """
+    Fetches news, combines them, and sends to Gemini API for summarization.
+    """
+    api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY")
+    if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
+        logging.warning(f"[{ticker_symbol}] Gemini API Key not configured. Skipping AI news summary.")
+        return "N/A (AI Summary Disabled)"
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash') # Use the fast model
+
+        # 1. Combine the news headlines from yfinance
+        if not yf_news_list:
+            logging.info(f"[{ticker_symbol}] No news headlines found by yfinance.")
+            return "No recent news found."
+
+        # Convert list of dicts to a simple text block
+        headlines = [item.get('title', '') for item in yf_news_list]
+        news_text = "\n".join(headlines)
+
+        # 2. Create the prompt (based on your example)
+        prompt = f"""
+        Task: Analyze the following recent news headlines for the company '{company_name}' (Ticker: {ticker_symbol}) and generate a brief summary for an investor.
+        
+        Output Format (Use Arabic):
+        1.  **الأخبار العاجلة أو التشغيلية (إن وجدت):** (Summarize any major operational news like factory incidents, product launches, etc.)
+        2.  **الأخبار المالية وتحليل السوق (إن وجدت):** (Summarize any financial news like earnings, analyst ratings, or market sentiment.)
+        3.  **الخلاصة:** (A 1-2 sentence conclusion of the overall news sentiment.)
+        
+        News Headlines to Analyze:
+        ---
+        {news_text}
+        ---
+        
+        Analysis (in Arabic):
+        """
+
+        # 3. Call the API
+        response = model.generate_content(prompt)
+        
+        # Clean up the response
+        summary = response.text
+        summary = summary.replace('•', '-') # Clean bullets
+        return str(summary)
+
+    except Exception as e:
+        logging.error(f"[{ticker_symbol}] Error calling Gemini API: {e}")
+        return f"N/A (AI Summary Error: {e})"
 
 # --- ✅ MODIFIED FUNCTION (Accepts CONFIG) ---
 def fetch_data_yfinance(ticker_obj, CONFIG):
@@ -842,23 +905,28 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         # News & Earnings Date
         if source == "yfinance":
             try:
+                # --- THIS IS THE ORIGINAL NEWS CODE ---
                 news = earnings_data.get('news', [])
                 news_str = "No"
                 news_list_str = "N/A"
-                if news:
-                    if isinstance(news, list):
-                        news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
-                        news_list_str = ", ".join(news_titles) # Flatten list to string
-                        
-                        now_ts = datetime.now().timestamp()
-                        recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
-                        if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
-                            news_str = "Yes"
-                    else:
-                        logging.warning(f"[{ticker_symbol}] 'news' data was not a list, skipping.")
+                
+                if news and isinstance(news, list):
+                    news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
+                    news_list_str = ", ".join(news_titles) # Flatten list to string
+                    
+                    now_ts = datetime.now().timestamp()
+                    recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
+                    if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
+                        news_str = "Yes"
                 
                 parsed['news_list'] = str(news_list_str) # Force string
                 parsed['recent_news'] = str(news_str) # Force string
+
+                # --- NEW CODE (P4): Call AI Summary ---
+                company_short_name = parsed.get('shortName', ticker_symbol)
+                # We pass the raw 'news' list (list of dicts)
+                parsed['ai_news_summary'] = get_ai_news_summary(ticker_symbol, company_short_name, news, CONFIG)
+                # --- END OF NEW CODE (P4) ---
 
                 last_div_date_ts = info.get('lastDividendDate')
                 last_div_value = info.get('lastDividendValue')
@@ -898,6 +966,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
                  logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
                  parsed['news_list'] = "N/A"
                  parsed['recent_news'] = "N/A"
+                 parsed['ai_news_summary'] = "N/A (Error)" # <-- NEW (P4)
                  parsed['next_earnings_date'] = "N/A"
                  parsed['last_dividend_date'] = "N/A"
                  parsed['last_dividend_value'] = np.nan
@@ -906,6 +975,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         else: # Alpha Vantage
              parsed['news_list'] = "N/A"
              parsed['recent_news'] = "N/A (AV)"
+             parsed['ai_news_summary'] = "N/A (AV)" # <-- NEW (P4)
              parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
@@ -916,7 +986,8 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
         atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
-        fib_target_mult = 1.618 
+        # --- Use Fib 1.618 as a fallback if ATR_TAKE_PROFIT_MULTIPLIER is not in config ---
+        fib_target_mult = rm_config.get('ATR_TAKE_PROFIT_MULTIPLIER', 1.618) 
         risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 500)
         use_cut_loss_filter = rm_config.get('USE_CUT_LOSS_FILTER', True)
         
@@ -965,10 +1036,10 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
 
         # --- MODIFICATION START: Exit Rule Logic ---
         
-        # 1. Get default Fib-based Take Profit
-        take_profit_price_fib = np.nan
+        # 1. Get default ATR/Fib-based Take Profit
+        take_profit_price_atr = np.nan
         if pd.notna(risk_per_share) and risk_per_share > 0:
-            take_profit_price_fib = last_price + (risk_per_share * fib_target_mult)
+            take_profit_price_atr = last_price + (risk_per_share * fib_target_mult)
         
         # 2. Get SMC-based Take Profit (Opposing Supply Zone)
         # We target the *bottom* of the Bearish OB
@@ -976,16 +1047,16 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         
         # 3. Choose the *tighter* (more conservative) target
         take_profit_price = np.nan
-        if pd.notna(take_profit_price_fib) and pd.notna(take_profit_price_smc):
+        if pd.notna(take_profit_price_atr) and pd.notna(take_profit_price_smc):
             # Use the SMC target ONLY if it's a tighter, valid target
-            if take_profit_price_smc < take_profit_price_fib and take_profit_price_smc > last_price:
+            if take_profit_price_smc < take_profit_price_atr and take_profit_price_smc > last_price:
                 take_profit_price = take_profit_price_smc
             else:
-                take_profit_price = take_profit_price_fib
-        elif pd.notna(take_profit_price_fib):
-            take_profit_price = take_profit_price_fib
+                take_profit_price = take_profit_price_atr
+        elif pd.notna(take_profit_price_atr):
+            take_profit_price = take_profit_price_atr
         elif pd.notna(take_profit_price_smc) and take_profit_price_smc > last_price:
-            # Use SMC as fallback if Fib failed
+            # Use SMC as fallback if ATR failed
             take_profit_price = take_profit_price_smc
         else:
             take_profit_price = np.nan # No valid target found
@@ -1057,7 +1128,8 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             'bearish_ob_fvg': bool(False),
             'bearish_ob_volume_ok': bool(False),
             'next_ex_dividend_date': 'N/A',
-            'shortName': 'N/A' # <-- ✅ ADD THIS
+            'shortName': 'N/A', # <-- ✅ ADD THIS
+            'ai_news_summary': 'N/A (Fatal Error)' # <-- NEW (P4)
         }
 
 
@@ -1077,7 +1149,8 @@ def process_ticker(ticker, CONFIG):
             'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
             'next_ex_dividend_date': 'N/A',
-            'shortName': 'N/A' # <-- ✅ ADD THIS
+            'shortName': 'N/A', # <-- ✅ ADD THIS
+            'ai_news_summary': 'N/A (Config Error)' # <-- NEW (P4)
         }
         
     # 1. Attempt yfinance
@@ -1094,6 +1167,7 @@ def process_ticker(ticker, CONFIG):
         # 2. Attempt Alpha Vantage Fallback
         logging.warning(f"[{ticker}] yfinance data invalid. Trying Alpha Vantage fallback.")
         
+        # --- MODIFIED: Use correct key from user's config ---
         av_keys_list = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEYS', []) 
         
         if not av_keys_list:
@@ -1116,7 +1190,8 @@ def process_ticker(ticker, CONFIG):
                 'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
                 'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
                 'next_ex_dividend_date': 'N/A',
-                'shortName': 'N/A' # <-- ✅ ADD THIS
+                'shortName': 'N/A', # <-- ✅ ADD THIS
+                'ai_news_summary': 'N/A (Data Failed)' # <-- NEW (P4)
             }
             
     # 3. Parse and Calculate
@@ -1137,7 +1212,8 @@ def process_ticker(ticker, CONFIG):
             'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
             'next_ex_dividend_date': 'N/A',
-            'shortName': 'N/A' # <-- ✅ ADD THIS
+            'shortName': 'N/A', # <-- ✅ ADD THIS
+            'ai_news_summary': 'N/A (Parsing Error)' # <-- NEW (P4)
         }
 
 
