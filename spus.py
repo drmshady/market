@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.3 (Add Ticker Names)
+SPUS Quantitative Analyzer v19.4 (Market Regime & SMC Exits)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -30,6 +30,10 @@ SPUS Quantitative Analyzer v19.3 (Add Ticker Names)
 - NEW: fetch_tickers_from_local_csv() for TASI and EGX.
 - ✅ ADDED: 'shortName' (Company Name) to data fetching and parsing.
 - ✅ FIXED: Added 'shortName' to all failure dictionaries.
+- ✅ NEW (P1): check_market_regime() function added.
+- ✅ MODIFIED (P2): parse_ticker_data() Risk Management section
+     uses Bearish OB as a potential Take Profit target.
+- ✅ ADDED (P2): MACD_EXIT_SIGNAL added for exit rule logic.
 """
 
 import requests
@@ -196,6 +200,53 @@ def fetch_market_tickers(CONFIG):
     logging.info(f"Successfully fetched {len(tickers)} unique ticker symbols for market.")
     return list(set(tickers)) # Return unique list
 
+
+# --- ✅ NEW (P1): Market Regime Filter ---
+def check_market_regime(CONFIG):
+    """
+    Checks the trend of the primary market index (e.g., S&P 500/TASI).
+    Returns 'BULLISH', 'BEARISH', or 'TRANSITIONAL'.
+    """
+    try:
+        # Get index ticker from config, default to ^GSPC
+        index_ticker = CONFIG.get("MARKET_INDEX_TICKER", "^GSPC") 
+        
+        # Get MA windows from config
+        short_ma_window = CONFIG.get('TECHNICALS', {}).get('SHORT_MA_WINDOW', 50)
+        long_ma_window = CONFIG.get('TECHNICALS', {}).get('LONG_MA_WINDOW', 200)
+
+        index_obj = yf.Ticker(index_ticker)
+        # Fetch slightly more than 1y to ensure 200MA is calculated
+        hist = index_obj.history(period="300d") 
+        
+        if hist.empty or len(hist) < long_ma_window:
+            logging.warning(f"Could not fetch sufficient history for market index {index_ticker}")
+            return "UNKNOWN" # Failsafe: allow run if index data is missing
+
+        hist[f'SMA_{short_ma_window}'] = hist['Close'].rolling(window=short_ma_window).mean()
+        hist[f'SMA_{long_ma_window}'] = hist['Close'].rolling(window=long_ma_window).mean()
+
+        last_price = hist['Close'].iloc[-1]
+        last_short_ma = hist[f'SMA_{short_ma_window}'].iloc[-1]
+        last_long_ma = hist[f'SMA_{long_ma_window}'].iloc[-1]
+
+        if pd.isna(last_short_ma) or pd.isna(last_long_ma):
+            logging.warning(f"Could not calculate MAs for index {index_ticker}")
+            return "UNKNOWN"
+
+        if last_price > last_short_ma and last_short_ma > last_long_ma:
+            regime = "BULLISH"
+        elif last_price < last_short_ma and last_short_ma < last_long_ma:
+            regime = "BEARISH"
+        else:
+            regime = "TRANSITIONAL"
+            
+        logging.info(f"Market Regime for {index_ticker} is {regime}")
+        return regime
+
+    except Exception as e:
+        logging.error(f"Error checking market regime for {index_ticker}: {e}")
+        return "UNKNOWN" # Failsafe
 
 # --- ✅ MODIFIED FUNCTION (Accepts CONFIG) ---
 def find_order_blocks(hist_df_full, ticker, CONFIG):
@@ -861,6 +912,8 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
              parsed['next_ex_dividend_date'] = str(info.get('ExDividendDate', 'N/A (AV)'))
 
         # --- 8. Risk Management ---
+        # --- ✅ MODIFIED (P2): Exit Rule Logic ---
+        
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
         atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
         fib_target_mult = 1.618 
@@ -910,8 +963,44 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         else:
             risk_per_share = np.nan 
 
+        # --- MODIFICATION START: Exit Rule Logic ---
+        
+        # 1. Get default Fib-based Take Profit
+        take_profit_price_fib = np.nan
         if pd.notna(risk_per_share) and risk_per_share > 0:
-            take_profit_price = last_price + (risk_per_share * fib_target_mult)
+            take_profit_price_fib = last_price + (risk_per_share * fib_target_mult)
+        
+        # 2. Get SMC-based Take Profit (Opposing Supply Zone)
+        # We target the *bottom* of the Bearish OB
+        take_profit_price_smc = parsed.get('bearish_ob_low', np.nan)
+        
+        # 3. Choose the *tighter* (more conservative) target
+        take_profit_price = np.nan
+        if pd.notna(take_profit_price_fib) and pd.notna(take_profit_price_smc):
+            # Use the SMC target ONLY if it's a tighter, valid target
+            if take_profit_price_smc < take_profit_price_fib and take_profit_price_smc > last_price:
+                take_profit_price = take_profit_price_smc
+            else:
+                take_profit_price = take_profit_price_fib
+        elif pd.notna(take_profit_price_fib):
+            take_profit_price = take_profit_price_fib
+        elif pd.notna(take_profit_price_smc) and take_profit_price_smc > last_price:
+            # Use SMC as fallback if Fib failed
+            take_profit_price = take_profit_price_smc
+        else:
+            take_profit_price = np.nan # No valid target found
+        
+        # 4. Add MACD Exit Signal
+        macd_signal = parsed.get('MACD_Signal', 'N/A')
+        if macd_signal == "Bearish Crossover":
+            parsed['MACD_EXIT_SIGNAL'] = str("SELL (Crossover)")
+        else:
+            parsed['MACD_EXIT_SIGNAL'] = str("HOLD")
+            
+        # --- MODIFICATION END ---
+        
+        if pd.notna(risk_per_share) and risk_per_share > 0 and pd.notna(take_profit_price):
+            # Now, use the FINAL take_profit_price
             reward_per_share = take_profit_price - last_price
             
             position_size_shares = risk_per_trade_usd / risk_per_share
@@ -919,8 +1008,9 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             
             parsed['Stop Loss Price'] = float(final_stop_loss_price)
             parsed['Final Stop Loss'] = float(final_stop_loss_price)
-            parsed['Take Profit Price'] = float(take_profit_price)
-            parsed['Risk/Reward Ratio'] = float(reward_per_share / risk_per_share) if risk_per_share != 0 else np.nan
+            parsed['Take Profit Price'] = float(take_profit_price) # <-- Updated
+            # Recalculate R/R based on the new, potentially tighter, target
+            parsed['Risk/Reward Ratio'] = float(reward_per_share / risk_per_share) if risk_per_share != 0 else np.nan # <-- Updated
             parsed['Risk % (to Stop)'] = float((risk_per_share / last_price) * 100) if last_price != 0 else np.nan
             parsed['Position Size (Shares)'] = float(position_size_shares)
             parsed['Position Size (USD)'] = float(position_size_usd)
