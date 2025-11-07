@@ -1403,7 +1403,8 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
         st.markdown("🔥 **Recent News Detected (Last 48h)**")
 
     # --- NEW CODE (P4): Display AI Summary ---
-    ai_summary = ticker_data.get('ai_news_summary', 'N/A')
+    # --- NEW CODE (P4): Display AI Summary ---
+    ai_summary = ticker_data.get('ai_holistic_analysis', 'N/A') # <-- THIS IS THE FIX
     if ai_summary and ai_summary not in ["N/A", "No recent news found.", "N/A (AI Summary Disabled)", "N/A (AV)", "N/A (Error)", "N/A (Fatal Error)", "N/A (Data Failed)", "N/A (Parsing Error)", "N/A (Config Error)"]:
         st.subheader("🤖 AI News Analysis")
         st.markdown(ai_summary, unsafe_allow_html=True)
