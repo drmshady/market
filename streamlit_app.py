@@ -941,7 +941,7 @@ def run_market_analyzer_app(config_file_name):
         weights = {}
         for factor, default in default_weights.items():
             # Check if the factor Z-score column exists before adding a slider
-            if f"Z_{factor}" in st.session_state.get('raw_df', pd.DataFrame()).columns:
+            if f"Z_{factor}" in raw_df.columns:
                 weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
             else:
                 # If Z_QxM hasn't been generated yet, don't show the slider
