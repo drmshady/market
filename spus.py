@@ -55,7 +55,7 @@ from bs4 import BeautifulSoup
 import random
 from scipy.signal import argrelextrema 
 import google.generativeai as genai
-#from google.generativeai import types # <-- DELETE THIS LINE
+from google.generativeai import types # <-- DELETE THIS LINE
 import textwrap
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -464,19 +464,18 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         logging.warning(f"[{ticker_symbol}] Gemini API Key not configured. Skipping AI news summary.")
         return "N/A (AI Summary Disabled)"
 
-    try:
-        # --- REPLACE THIS SECTION ---
-        # genai.configure(api_key=api_key)
-        # 
-        # # --- ✅ FIX (P4): Changed model name ---
-        genai.configure(
-            api_key=api_key,
-            client_options={"api_version": "v1"} # <-- This forces the v1 API
-        )
+        try:
+            # --- THIS IS THE CORRECT CODE ---
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(api_version='v1') # <-- Forces the stable v1 API
+            )
+            model = client.generative_model("gemini-pro") 
+            # --- END OF FIX ---
         
-        model = genai.GenerativeModel("gemini-pro")
-        # --- END OF FIX ---
-
+            # 1. Combine the news headlines from yfinance
+            news_text = "No recent news found."
+        # ... (rest of the function remains the same)
         # 1. Combine the news headlines from yfinance
         news_text = "No recent news found."
         if yf_news_list:
