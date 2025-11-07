@@ -468,7 +468,8 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         genai.configure(api_key=api_key)
         
         # --- ✅ FIX (P4): Changed model name ---
-        model = genai.GenerativeModel('gemini-1.5-pro-latest') # Use the LATEST model
+        model = genai.GenerativeModel("gemini-pro")
+          # Use the LATEST model
         # --- END FIX ---
 
         # 1. Combine the news headlines from yfinance
