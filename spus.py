@@ -54,7 +54,8 @@ import numpy as np
 from bs4 import BeautifulSoup
 import random
 from scipy.signal import argrelextrema 
-import google.generativeai as genai # <-- NEW (P4)
+import google.generativeai as genai
+from google.generativeai import types # <-- ADD THIS LINE
 import textwrap
 
 # --- Define Base Directory ---
@@ -465,12 +466,23 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         return "N/A (AI Summary Disabled)"
 
     try:
-        genai.configure(api_key=api_key)
-        
-        # --- ✅ FIX (P4): Changed model name ---
-        model = genai.GenerativeModel("gemini-pro")
-          # Use the LATEST model
-        # --- END FIX ---
+        # --- REPLACE THIS SECTION ---
+        # genai.configure(api_key=api_key)
+        # 
+        # # --- ✅ FIX (P4): Changed model name ---
+        # model = genai.GenerativeModel("gemini-pro")
+        #   # Use the LATEST model
+        # # --- END FIX ---
+        # --- END OF SECTION TO REPLACE ---
+
+
+        # --- ADD THIS NEW SECTION (THE FIX) ---
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version='v1') # <-- Forces the stable v1 API
+        )
+        model = client.generative_model("gemini-pro") # Get model from the new client
+        # --- END OF FIX ---
 
         # 1. Combine the news headlines from yfinance
         news_text = "No recent news found."
