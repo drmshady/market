@@ -605,6 +605,39 @@ def fetch_data_alpha_vantage(ticker, api_key, CONFIG):
              logging.warning(f"[{ticker}] AV Info fetch warning: {info_data.get('Note') or info_data.get('Error Message')}")
              info_data = None
 
+        # 3. Fetch News & Sentiment
+        news_list = [] # Default
+        try:
+            news_params = {
+                "function": "NEWS_SENTIMENT",
+                "tickers": ticker,
+                "limit": 10, # Get 10 recent articles
+                "apikey": api_key
+            }
+            response = requests.get(base_url, params=news_params, timeout=10)
+            response.raise_for_status()
+            news_data = response.json()
+            
+            if "feed" in news_data:
+                for item in news_data["feed"]:
+                    try:
+                        # Convert AV time format 'YYYYMMDDTHHMMSS' to a timestamp
+                        publish_time = datetime.strptime(item.get('time_published'), '%Y%m%dT%H%M%S')
+                        publish_timestamp = int(publish_time.timestamp())
+                    except Exception:
+                        publish_timestamp = 0
+                        
+                    news_list.append({
+                        'title': item.get('title'),
+                        'providerPublishTime': publish_timestamp 
+                    })
+            else:
+                logging.warning(f"[{ticker}] AV news fetch warning: {news_data.get('Note') or news_data.get('Error Message')}")
+
+        except Exception as e:
+            logging.warning(f"[{ticker}] Failed to fetch Alpha Vantage news: {e}")
+            # Don't fail the whole function, just return no news
+
     except requests.exceptions.RequestException as e:
         logging.error(f"[{ticker}] Alpha Vantage request error: {e}")
         return None
@@ -613,7 +646,12 @@ def fetch_data_alpha_vantage(ticker, api_key, CONFIG):
         return None
 
     if hist_data is not None and info_data is not None:
-        return {"hist": hist_data, "info": info_data, "earnings_data": {}, "source": "alpha_vantage"}
+        return {
+            "hist": hist_data, 
+            "info": info_data, 
+            "earnings_data": {"news": news_list}, # <-- ADD THE NEWS HERE
+            "source": "alpha_vantage"
+        }
     else:
         return None
 
@@ -994,8 +1032,24 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
                  parsed['next_ex_dividend_date'] = "N/A"
         
         else: # Alpha Vantage
-             parsed['news_list'] = "N/A"
-             parsed['recent_news'] = "N/A (AV)"
+             # --- MODIFIED: Use the news we fetched ---
+             news = earnings_data.get('news', [])
+             news_str = "No"
+             news_list_str = "N/A"
+             
+             if news and isinstance(news, list):
+                news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
+                news_list_str = ", ".join(news_titles)
+                
+                now_ts = datetime.now().timestamp()
+                recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
+                if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
+                    news_str = "Yes"
+            
+             parsed['news_list'] = str(news_list_str) # Force string
+             parsed['recent_news'] = str(news_str) # Force string
+             # --- END MODIFICATION ---
+             
              parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
