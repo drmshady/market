@@ -54,9 +54,6 @@ import numpy as np
 from bs4 import BeautifulSoup
 import random
 from scipy.signal import argrelextrema 
-import google.generativeai as genai
-from google.generativeai import types # <-- ADD THIS LINE
-import textwrap
 
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -470,18 +467,12 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         # genai.configure(api_key=api_key)
         # 
         # # --- ✅ FIX (P4): Changed model name ---
-        # model = genai.GenerativeModel("gemini-pro")
-        #   # Use the LATEST model
-        # # --- END FIX ---
-        # --- END OF SECTION TO REPLACE ---
-
-
-        # --- ADD THIS NEW SECTION (THE FIX) ---
-        client = genai.Client(
+        genai.configure(
             api_key=api_key,
-            http_options=types.HttpOptions(api_version='v1') # <-- Forces the stable v1 API
+            client_options={"api_version": "v1"} # <-- This forces the v1 API
         )
-        model = client.generative_model("gemini-pro") # Get model from the new client
+        
+        model = genai.GenerativeModel("gemini-pro")
         # --- END OF FIX ---
 
         # 1. Combine the news headlines from yfinance
