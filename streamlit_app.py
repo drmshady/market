@@ -852,6 +852,39 @@ def run_market_analyzer_app(config_file_name):
         del st.session_state['market_config_file']
         st.rerun()
 
+    # --- ⭐️ START OF MOVED BLOCK ⭐️ ---
+    # This block is moved from the bottom to here to fix the UnboundLocalError
+    # --- ✅ MODIFIED: Load Data using config_file_name as key ---
+    base_raw_df, base_histories, base_sheets, base_last_run_time, base_market_regime = load_analysis_data(config_file_name, st.session_state.run_timestamp)
+    
+    # Check for cache invalidation
+    if 'raw_df' not in st.session_state or st.session_state.get('base_run_timestamp') != st.session_state.run_timestamp:
+        if base_raw_df is None:
+            st.error("Analysis failed to produce base data. App cannot continue.")
+            st.stop()
+        
+        st.session_state.raw_df = base_raw_df.copy()
+        st.session_state.all_histories = base_histories.copy()
+        st.session_state.data_sheets = base_sheets
+        st.session_state.last_run_time = base_last_run_time
+        st.session_state.market_regime = base_market_regime # Store regime from the run
+        st.session_state.base_run_timestamp = st.session_state.run_timestamp
+    
+    raw_df = st.session_state.raw_df
+    all_histories = st.session_state.all_histories
+    last_run_time = st.session_state.last_run_time
+    
+    # This handles the "BEARISH" halt case
+    if raw_df is None or raw_df.empty:
+        if st.session_state.market_regime == "BEARISH":
+            st.warning(f"Analysis Halted: Market Regime is BEARISH. No buy signals will be generated.")
+            st.stop()
+        else:
+            st.error("No data available in session state.")
+            st.stop()
+    # --- ⭐️ END OF MOVED BLOCK ⭐️ ---
+
+
     # --- Sidebar ---
     with st.sidebar:
         try:
@@ -941,7 +974,11 @@ def run_market_analyzer_app(config_file_name):
         weights = {}
         for factor, default in default_weights.items():
             # Check if the factor Z-score column exists before adding a slider
+            
+            # --- ⭐️ THIS IS THE FIX ⭐️ ---
+            # 'raw_df' is now guaranteed to exist here
             if f"Z_{factor}" in raw_df.columns:
+            # --- ⭐️ END OF FIX ⭐️ ---
                 weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
             else:
                 # If Z_QxM hasn't been generated yet, don't show the slider
@@ -997,35 +1034,10 @@ def run_market_analyzer_app(config_file_name):
     st.markdown(f"**Market Regime Status:** <span style='color:{regime_color}; font-weight: 600;'>{regime_status}</span>", unsafe_allow_html=True)
     
     
-    # --- ✅ MODIFIED: Load Data using config_file_name as key ---
-    base_raw_df, base_histories, base_sheets, base_last_run_time, base_market_regime = load_analysis_data(config_file_name, st.session_state.run_timestamp)
+    # --- This block was moved to the top ---
+    # base_raw_df, base_histories, ...
+    # ...
     
-    # Check for cache invalidation
-    if 'raw_df' not in st.session_state or st.session_state.get('base_run_timestamp') != st.session_state.run_timestamp:
-        if base_raw_df is None:
-            st.error("Analysis failed to produce base data. App cannot continue.")
-            st.stop()
-        
-        st.session_state.raw_df = base_raw_df.copy()
-        st.session_state.all_histories = base_histories.copy()
-        st.session_state.data_sheets = base_sheets
-        st.session_state.last_run_time = base_last_run_time
-        st.session_state.market_regime = base_market_regime # Store regime from the run
-        st.session_state.base_run_timestamp = st.session_state.run_timestamp
-    
-    raw_df = st.session_state.raw_df
-    all_histories = st.session_state.all_histories
-    last_run_time = st.session_state.last_run_time
-    
-    # This handles the "BEARISH" halt case
-    if raw_df is None or raw_df.empty:
-        if st.session_state.market_regime == "BEARISH":
-            st.warning(f"Analysis Halted: Market Regime is BEARISH. No buy signals will be generated.")
-            st.stop()
-        else:
-            st.error("No data available in session state.")
-            st.stop()
-        
     st.success(f"Data loaded from analysis run at: {datetime.fromtimestamp(last_run_time, SAUDI_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     # --- UI: Dynamic Score Calculation & Filtering ---
