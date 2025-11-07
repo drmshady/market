@@ -464,18 +464,15 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         logging.warning(f"[{ticker_symbol}] Gemini API Key not configured. Skipping AI news summary.")
         return "N/A (AI Summary Disabled)"
 
-        try:
-            # --- THIS IS THE CORRECT CODE ---
-            client = genai.Client(
-                api_key=api_key,
-                http_options=types.HttpOptions(api_version='v1') # <-- Forces the stable v1 API
-            )
-            model = client.generative_model("gemini-pro") 
-            # --- END OF FIX ---
-        
-            # 1. Combine the news headlines from yfinance
-            news_text = "No recent news found."
-        # ... (rest of the function remains the same)
+    try:
+        # --- THIS IS THE CORRECT CODE ---
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version='v1') # <-- Forces the stable v1 API
+        )
+        model = client.generative_model("gemini-pro") 
+        # --- END OF FIX ---
+
         # 1. Combine the news headlines from yfinance
         news_text = "No recent news found."
         if yf_news_list:
