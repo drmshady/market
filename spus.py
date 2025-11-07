@@ -54,7 +54,9 @@ import numpy as np
 from bs4 import BeautifulSoup
 import random
 from scipy.signal import argrelextrema 
-
+import google.generativeai as genai
+#from google.generativeai import types # <-- DELETE THIS LINE
+import textwrap
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
