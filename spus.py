@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.10 (Force v1 API)
+SPUS Quantitative Analyzer v19.12 (Force v1 API)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -34,11 +34,36 @@ SPUS Quantitative Analyzer v19.10 (Force v1 API)
 - ✅ MODIFIED (P2): parse_ticker_data() Risk Management section
      uses Bearish OB as a potential Take Profit target.
 - ✅ ADDED (P2): MACD_EXIT_SIGNAL added for exit rule logic.
-- ✅ NEW (P4): Added google.generativeai import.
-- ✅ MODIFIED (P4): Renamed get_ai_news_summary to get_ai_stock_analysis
-- ✅ MODIFIED (P4): AI function now accepts all parsed_data for holistic summary
-- ✅ MODIFIED (P4): Moved AI function call to the end of parse_ticker_data
-- ✅ FIXED (P4): Set model to 'gemini-1.5-pro-latest' to force v1 API
+- ✅ MODIFIED (P4): Replaced Google Gemini with OpenAI (ChatGPT).
+- ✅ MODIFIED (P4): AI function call moved to streamlit_app.py
+  for on-demand (lazy) loading to reduce API costs.
+- ✅ MODIFIED (P5): Added check for placeholder API key.
+- ✅ MODIFIED (USER REQ): Changed default AI model to gpt-4o-mini
+- ✅ ADDED (USER REQ): Retry logic for fetch_data_yfinance
+- ✅ ADDED (USER REQ): Retry logic for fetch_data_alpha_vantage
+- ✅ ADDED (USER REQ): Volatility gate (ATR % > X) in check_market_regime
+- ✅ ADDED (USER REQ): Dynamic risk % (from equity) in parse_ticker_data
+- ✅ MODIFIED (USER REQ): get_ai_stock_analysis now supports a 
+  `position_assessment` type for the portfolio tab.
+- ✅ BUG FIX: Fixed NameError 'parsed' is not defined in get_ai_stock_analysis
+- ✅ NEW: Replaced all news fetching with Finnhub.io API.
+- ✅ NEW: Added `fetch_data_finnhub_news` function.
+- ✅ MODIFIED: `process_ticker` now calls Finnhub for news.
+- ✅ MODIFIED: `parse_ticker_data` now parses Finnhub news format.
+- ✅ REMOVED: `search_google_news` (fragile scraping method).
+- ✅ REMOVED: News fetching from yfinance and Alpha Vantage.
+- ✅ NEW: Added `get_ai_portfolio_summary` for holistic portfolio review.
+- ✅ MODIFIED (USER REQ): `get_ai_portfolio_summary` prompt now
+     analyzes detailed holdings for stock-specific recommendations.
+- ✅ MODIFIED (USER REQ): `process_ticker` now has a `fetch_news`
+     parameter to limit API calls.
+- ✅ UPGRADE (Phase 1): Added 12-hour caching to `fetch_market_tickers`
+     to make web scraping fallback more robust.
+- ✅ UPGRADE (Phase 2): Added `smc_volume_missing` flag for UI trust.
+- ✅ UPGRADE (Phase 2): Added `z_score_fallback` flag for small sectors.
+- ✅ UPGRADE (Phase 3): Replaced `recent_news_count` with
+     `news_sentiment_score` (float) calculated on-demand by AI.
+- ✅ NEW (USER REQ): Added `get_ai_top20_summary` function.
 """
 
 import requests
@@ -48,15 +73,19 @@ import pandas_ta as ta
 import time
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta # <-- ✅ NEW IMPORT
 import json
 import numpy as np
 from bs4 import BeautifulSoup
 import random
 from scipy.signal import argrelextrema 
-import google.generativeai as genai
-from google.generativeai import types # <-- DELETE THIS LINE
-import textwrap
+import openai
+from openai import OpenAI
+import google.genai as genai 
+from google.genai.errors import APIError as GeminiAPIError
+import pickle # <-- ✅ ADDED (Phase 1)
+# ❌ REMOVED: from urllib.parse import quote_plus
+
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -185,10 +214,40 @@ def fetch_market_tickers(CONFIG):
         local_path = os.path.join(BASE_DIR, CONFIG['SPUS_HOLDINGS_CSV_PATH'])
         tickers = fetch_spus_tickers_from_csv(local_path)
         
-        # --- 2. Try web scrape fallback ---
+        # --- 2. Try web scrape fallback (with Caching) ---
         if tickers is None:
             logging.warning("Local SPUS CSV failed, trying web scrape fallback...")
-            tickers = fetch_spus_tickers_from_web()
+            
+            # --- ✅ NEW: Caching Logic ---
+            CACHE_DIR = os.path.join(BASE_DIR, "cache")
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            cache_path = os.path.join(CACHE_DIR, "scraped_tickers.pkl")
+            CACHE_TTL_SECONDS = 12 * 3600 # 12 hours
+
+            try:
+                if os.path.exists(cache_path):
+                    cache_mod_time = os.path.getmtime(cache_path)
+                    if (time.time() - cache_mod_time) < CACHE_TTL_SECONDS:
+                        logging.info(f"Using cached ticker list from {cache_path} (less than 12h old).")
+                        with open(cache_path, 'rb') as f:
+                            tickers = pickle.load(f)
+            except Exception as e:
+                logging.warning(f"Failed to load ticker cache, will re-scrape: {e}")
+                tickers = None # Ensure tickers is None so scrape runs
+            # --- ✅ END: Caching Logic ---
+
+            if tickers is None: # If cache was old, missing, or failed
+                logging.info("Cache empty or stale, running web scraper...")
+                tickers = fetch_spus_tickers_from_web()
+                
+                # If scrape was successful, save to cache
+                if tickers:
+                    try:
+                        with open(cache_path, 'wb') as f:
+                            pickle.dump(tickers, f)
+                        logging.info(f"Successfully saved new ticker list to cache: {cache_path}")
+                    except Exception as e:
+                        logging.warning(f"Failed to save ticker cache: {e}")
 
     elif source == "LOCAL_CSV":
         csv_file = CONFIG.get("TICKER_LIST_FILE")
@@ -214,19 +273,23 @@ def fetch_market_tickers(CONFIG):
     return list(set(tickers)) # Return unique list
 
 
-# --- ✅ NEW (P1): Market Regime Filter ---
+# --- ✅ MODIFIED (USER REQ): Added Volatility Gate ---
 def check_market_regime(CONFIG):
     """
     Checks the trend of the primary market index (e.g., S&P 500/TASI).
     Returns 'BULLISH', 'BEARISH', or 'TRANSITIONAL'.
+    Includes a volatility gate to override trend in choppy markets.
     """
     try:
         # Get index ticker from config, default to ^GSPC
         index_ticker = CONFIG.get("MARKET_INDEX_TICKER", "^GSPC") 
         
         # Get MA windows from config
-        short_ma_window = CONFIG.get('TECHNICALS', {}).get('SHORT_MA_WINDOW', 50)
-        long_ma_window = CONFIG.get('TECHNICALS', {}).get('LONG_MA_WINDOW', 200)
+        tech_config = CONFIG.get('TECHNICALS', {})
+        short_ma_window = tech_config.get('SHORT_MA_WINDOW', 50)
+        long_ma_window = tech_config.get('LONG_MA_WINDOW', 200)
+        atr_window = tech_config.get('ATR_WINDOW', 14)
+        vol_threshold = tech_config.get('REGIME_VOLATILITY_THRESHOLD', 5.0) # e.g., 5.0%
 
         index_obj = yf.Ticker(index_ticker)
         # Fetch slightly more than 1y to ensure 200MA is calculated
@@ -235,11 +298,26 @@ def check_market_regime(CONFIG):
         if hist.empty or len(hist) < long_ma_window:
             logging.warning(f"Could not fetch sufficient history for market index {index_ticker}")
             return "UNKNOWN" # Failsafe: allow run if index data is missing
-
+        
+        # --- 1. Volatility Gate Check ---
+        hist.ta.atr(length=atr_window, append=True)
+        atr_col = f'ATRr_{atr_window}'
+        
+        if atr_col in hist.columns:
+            last_price = hist['Close'].iloc[-1]
+            last_atr = hist[atr_col].iloc[-1]
+            
+            if pd.notna(last_price) and pd.notna(last_atr) and last_price > 0:
+                volatility_pct = (last_atr / last_price) * 100
+                if volatility_pct > vol_threshold:
+                    logging.warning(f"Market Regime for {index_ticker} is VOLATILE (ATR {volatility_pct:.2f}% > {vol_threshold}%). Forcing TRANSITIONAL.")
+                    return "TRANSITIONAL"
+        
+        # --- 2. Trend Check (if volatility is acceptable) ---
         hist[f'SMA_{short_ma_window}'] = hist['Close'].rolling(window=short_ma_window).mean()
         hist[f'SMA_{long_ma_window}'] = hist['Close'].rolling(window=long_ma_window).mean()
 
-        last_price = hist['Close'].iloc[-1]
+        last_price = hist['Close'].iloc[-1] # Already defined, but good for clarity
         last_short_ma = hist[f'SMA_{short_ma_window}'].iloc[-1]
         last_long_ma = hist[f'SMA_{long_ma_window}'].iloc[-1]
 
@@ -254,7 +332,7 @@ def check_market_regime(CONFIG):
         else:
             regime = "TRANSITIONAL"
             
-        logging.info(f"Market Regime for {index_ticker} is {regime}")
+        logging.info(f"Market Regime for {index_ticker} is {regime} (Volatility OK)")
         return regime
 
     except Exception as e:
@@ -283,7 +361,8 @@ def find_order_blocks(hist_df_full, ticker, CONFIG):
         'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
         'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False),
         'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-        'last_swing_low': np.nan, 'last_swing_high': np.nan
+        'last_swing_low': np.nan, 'last_swing_high': np.nan,
+        'smc_volume_missing': bool(False) # <-- ✅ ADDED (Phase 2)
     }
 
     if len(hist_df_full) < lookback:
@@ -298,6 +377,7 @@ def find_order_blocks(hist_df_full, ticker, CONFIG):
              logging.warning(f"[{ticker}] 'Volume' not in hist_df. Cannot perform volume confirmation.")
              hist_df['Volume'] = 0
              vol_multiplier = 999 # Effectively disables volume check
+             ob_data['smc_volume_missing'] = bool(True) # <-- ✅ ADDED (Phase 2)
              
         hist_df['vol_sma'] = hist_df['Volume'].rolling(window=vol_lookback).mean()
         
@@ -450,54 +530,92 @@ def find_order_blocks(hist_df_full, ticker, CONFIG):
             'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
             'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False),
             'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-            'last_swing_low': np.nan, 'last_swing_high': np.nan
+            'last_swing_low': np.nan, 'last_swing_high': np.nan,
+            'smc_volume_missing': bool(False) # <-- ✅ ADDED (Phase 2)
         }
         return ob_data_default
 
-# --- ✅ NEW (P4): AI Stock Analysis Function ---
-def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data, CONFIG):
+# --- MODIFIED: Multi-API Fallback Function with Position Assessment ---
+def get_ai_stock_analysis(ticker_symbol, company_name, news_headlines_str, parsed_data, CONFIG, analysis_type="deep_dive", position_data=None):
     """
-    Takes all parsed data and news, sending them to Gemini API for a holistic summary.
+    Tries Gemini API first, falls back to OpenAI API if the Gemini call fails.
+    The prompt is customized based on the `analysis_type`.
+    
+    ✅ NOTE: News is now reliably provided by Finnhub, so the live search 
+    fallback (`search_google_news`) has been removed.
     """
-    api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY")
-    if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
-        logging.warning(f"[{ticker_symbol}] Gemini API Key not configured. Skipping AI news summary.")
-        return "N/A (AI Summary Disabled)"
-
-    try:
-        # --- THIS IS THE CORRECT CODE ---
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(api_version='v1') # <-- Forces the stable v1 API
-        )
-        model = client.generative_model("gemini-pro") 
-        # --- END OF FIX ---
-
-        # 1. Combine the news headlines from yfinance
-        news_text = "No recent news found."
-        if yf_news_list:
-            headlines = [item.get('title', '') for item in yf_news_list]
-            news_text = "\n".join(headlines)
-        else:
-            logging.info(f"[{ticker_symbol}] No news headlines found by yfinance.")
-
-        # 2. Extract key quantitative data
-        last_price = parsed_data.get('last_price', 'N/A')
-        sector = parsed_data.get('Sector', 'N/A')
-        valuation = parsed_data.get('grahamValuation', 'N/A')
-        trend = parsed_data.get('Trend (50/200 Day MA)', 'N/A')
-        macd = parsed_data.get('MACD_Signal', 'N/A')
-        smc_signal = parsed_data.get('entry_signal', 'N/A')
-        rr_ratio = parsed_data.get('Risk/Reward Ratio', 'N/A')
-        if isinstance(rr_ratio, float):
-            rr_ratio = f"{rr_ratio:.2f}"
+    gemini_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY") # NEW KEY
+    openai_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("OPENAI_API_KEY")
+    
+    # --- 1. Prepare Prompt & Context ---
+    
+    # 1. Check/Format the news string
+    news_text = "No recent news found."
+    if news_headlines_str and news_headlines_str != "N/A" and news_headlines_str != "No recent news found.":
+        logging.info(f"[{ticker_symbol}] Using Finnhub news for AI summary.")
+        # Finnhub news is already a clean string of headlines
+        news_text = news_headlines_str.replace(", ", "\n- ")
+        if not news_text.startswith("- "):
+             news_text = "- " + news_text
+    else:
+        logging.info(f"[{ticker_symbol}] No news found in parsed_data for AI summary.")
 
 
-        # 3. Create the holistic prompt
+    # --- ✅ BUG FIX: Define `parsed` *before* it is used ---
+    # Convert pandas Series to dict *first* if needed
+    if isinstance(parsed_data, pd.Series):
+         parsed = parsed_data.to_dict()
+    else:
+         parsed = parsed_data.copy() # Avoid modifying the original dict
+    # --- END OF BUG FIX ---
+
+    # 2. Extract key quantitative data
+    last_price = parsed.get('last_price', 'N/A')
+    sector = parsed.get('Sector', 'N/A')
+    valuation = parsed.get('grahamValuation', 'N/A')
+    trend = parsed.get('Trend (50/200 Day MA)', 'N/A')
+    macd = parsed.get('MACD_Signal', 'N/A')
+    smc_signal = parsed.get('entry_signal', 'N/A')
+    rr_ratio = parsed.get('Risk/Reward Ratio', 'N/A') # Now this works
+    if isinstance(rr_ratio, float):
+        rr_ratio = f"{rr_ratio:.2f}"
+
+
+    # 3. Create the holistic prompt (customized by type)
+    if analysis_type == "position_assessment":
+        # Position Assessment Prompt (Portfolio Tab)
+        position_details_str = "\n".join([f"- **{k}**: {v}" for k, v in position_data.items()])
+        
+        prompt = f"""
+        Task: Act as a portfolio manager. Analyze the stock '{company_name}' (Ticker: {ticker_symbol}) in the context of the investor's current position and market data. Generate an **assessment and recommendation** in Arabic.
+
+        Output Format (Use Arabic and Markdown - **Forced RTL**):
+        1.  **تقييم الوضع الحالي:** (Analyze the stock's performance in the portfolio (P/L) versus its current market trend and Quant Score.)
+        2.  **التحليل الأساسي والفني:** (Briefly summarize the key fundamental factors and current technical signals.)
+        3.  **التوصية (Recommendation):** (Should the investor **Hold**, **Add** (Averaging down/up), or **Reduce/Exit**? Justify based on the position data and technical signals like stop loss/demand zone proximity.)
+
+        Investor's Current Position:
+        {position_details_str}
+
+        Key Market Data for {ticker_symbol}:
+        -   **Last Price:** {last_price}
+        -   **MA Trend (50/200):** {trend}
+        -   **SMC Entry Signal (New Trade):** {smc_signal}
+        -   **Risk/Reward Ratio (New Trade):** {rr_ratio}
+
+        Recent News Headlines:
+        ---
+        {news_text}
+        ---
+        
+        Analysis (in Arabic):
+        """
+        
+    else: # Default Deep Dive Prompt (Deep Dive Tab)
         prompt = f"""
         Task: Act as a stock market analyst. Analyze the following quantitative data and qualitative news headlines for the company '{company_name}' (Ticker: {ticker_symbol}). Generate a brief, holistic analysis for an investor.
 
-        Output Format (Use Arabic):
+        Output Format (Use Arabic and Markdown - **Forced RTL**):
         1.  **الملخص التنفيذي:** (A 1-2 sentence summary of the stock's current situation.)
         2.  **التحليل الفني (Technical Analysis):** (Analyze the trend, MACD, and SMC signal. Is it a good time to buy?)
         3.  **التحليل الأساسي (Fundamental Analysis):** (Analyze the valuation and sector.)
@@ -511,6 +629,7 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         -   **MACD Signal:** {macd}
         -   **SMC Entry Signal:** {smc_signal}
         -   **Risk/Reward Ratio:** {rr_ratio}
+        -   **Full Data (for context):** {json.dumps(parsed, indent=2, default=str)}
 
         Recent News Headlines:
         ---
@@ -519,46 +638,364 @@ def get_ai_stock_analysis(ticker_symbol, company_name, yf_news_list, parsed_data
         
         Analysis (in Arabic):
         """
+    # --- End Prompt Prep ---
 
-        # 4. Call the API
-        response = model.generate_content(prompt)
-        
-        # Clean up the response
-        summary = response.text
-        summary = summary.replace('•', '-') # Clean bullets
-        return str(summary)
 
-    except Exception as e:
-        logging.error(f"[{ticker_symbol}] Error calling Gemini API: {e}")
-        return f"N/A (AI Summary Error: {e})"
-
-# --- ✅ MODIFIED FUNCTION (Accepts CONFIG) ---
-def fetch_data_yfinance(ticker_obj, CONFIG):
-    """Fetches history and info from yfinance."""
-    try:
-        hist = ticker_obj.history(period=CONFIG.get("HISTORICAL_DATA_PERIOD", "5y"))
-        info = ticker_obj.info
-        
-        # Add earnings data
-        earnings = {
-            "earnings": ticker_obj.income_stmt,
-            "quarterly_earnings": ticker_obj.quarterly_income_stmt,
-            "calendar": ticker_obj.calendar,
-            "news": ticker_obj.get_news() # <-- ✅ NEWS FIX
-        }
-        
-        if hist.empty or info is None:
-            logging.warning(f"[{ticker_obj.ticker}] yfinance returned empty history or info.")
-            return None
+    # --- 2. Try Gemini (Primary) ---
+    if gemini_api_key and gemini_api_key != "AIzaSy...YOUR_GEMINI_KEY":
+        try:
+            logging.info(f"[{ticker_symbol}] Attempting Gemini API (Primary)...")
+            client = genai.Client(api_key=gemini_api_key)
             
-        return {"hist": hist, "info": info, "earnings_data": earnings, "source": "yfinance"}
-    except Exception as e:
-        logging.error(f"[{ticker_obj.ticker}] yfinance data fetch error: {e}")
-        return None
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",  # Use a cost-effective, fast model
+                contents=[
+                    {"role": "user", "parts": [{"text": prompt}]}
+                ],
+                config={"system_instruction": "You are a helpful stock market analyst providing summaries in Arabic. The output must be formatted with Arabic markdown headings and bullet points."}
+            )
+            summary = response.text
+            
+            logging.info(f"[{ticker_symbol}] Successfully received summary from Gemini.")
+            return str(summary)
+            
+        except GeminiAPIError as e:
+            # Catch API errors specific to Gemini (e.g., rate limits, invalid key, model failure)
+            logging.warning(f"[{ticker_symbol}] Gemini API failed: {e}. Falling back to OpenAI...")
+        except Exception as e:
+            # Catch other potential errors (e.g., connection issue)
+            logging.warning(f"[{ticker_symbol}] Non-API error with Gemini: {e}. Falling back to OpenAI...")
 
-# --- ✅ MODIFIED FUNCTION (Accepts CONFIG) ---
+
+    # --- 3. Fallback to OpenAI ---
+    if openai_api_key and openai_api_key != "sk-YOUR_ACTUAL_API_KEY_GOES_HERE":
+        try:
+            logging.info(f"[{ticker_symbol}] Attempting OpenAI API (Fallback)...")
+            client = OpenAI(api_key=openai_api_key)
+
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful stock market analyst providing summaries in Arabic. The output must be formatted with Arabic markdown headings and bullet points."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            summary = completion.choices[0].message.content
+            
+            logging.info(f"[{ticker_symbol}] Successfully received summary from OpenAI (Fallback).")
+            return str(summary)
+
+        except Exception as e:
+            logging.error(f"[{ticker_symbol}] OpenAI API failed: {e}")
+            return f"N/A (AI Summary Error: OpenAI API failed.)"
+            
+    else:
+        logging.warning(f"[{ticker_symbol}] Gemini failed and OpenAI key is missing or invalid.")
+        return "N/A (AI Summary Disabled: API Keys Missing or Invalid)"
+
+# --- ✅ NEW FUNCTION: AI Portfolio Summary ---
+def get_ai_portfolio_summary(portfolio_data, CONFIG):
+    """
+    Analyzes a dictionary of portfolio metrics and generates a holistic summary.
+    """
+    gemini_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY")
+    openai_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("OPENAI_API_KEY")
+    
+    # --- 1. Prepare Prompt ---
+    try:
+        # Convert pandas DataFrames/Series to JSON strings for the prompt
+        data_str = json.dumps(portfolio_data, indent=2, default=str)
+    except Exception as e:
+        logging.error(f"Failed to serialize portfolio data for AI: {e}")
+        return "Error: Could not format portfolio data for analysis."
+
+    prompt = f"""
+    Task: Act as a professional portfolio manager. The user has provided a snapshot of their stock portfolio, including high-level metrics and a detailed list of every stock they own.
+    1. Analyze the high-level data (P/L, Allocation, Factor Exposure).
+    2. **Crucially, analyze the detailed 'Holdings Details' list.**
+    3. Combine these analyses to provide a holistic assessment and actionable, stock-specific recommendations in Arabic.
+
+    Output Format (Use Arabic and Markdown - **Forced RTL**):
+    1.  **الملخص التنفيذي (Executive Summary):** (A 1-2 sentence summary of the portfolio's current state, main risk, and primary strength.)
+    2.  **تحليل الأداء والتوزيع (Performance & Allocation):** (Analyze the P/L, sector concentration, and cash vs. stock allocation.)
+    3.  **تحليل العوامل (Factor Analysis):** (Analyze the 'Weighted Factor Exposure'.)
+    4.  **⭐ توصيات الأسهم الفردية (Stock-Specific Recommendations):**
+        (This is the most important section. Look at 'Holdings Details' for each stock.
+        -   **Identify Top Buys/Adds:** Which stocks have a 'Buy' signal ('entry_signal') and strong 'Final Quant Score'?
+        -   **Identify Top Sells/Trims:** Which stocks have high 'Unrealized P/L' (good time to trim profit) OR very weak 'Final Quant Score' (good time to cut)?
+        -   **Identify Top Holds:** Which stocks are performing well and should be left alone?
+        -   **Give 3-5 specific recommendations** like: "توصية: **شراء/إضافة** سهم [Stock Name]... (السبب: إشارة شراء قوية ودرجة كمية عالية)" or "توصية: **تخفيف/بيع** سهم [Stock Name]... (ال..."السبب: ربح مرتفع / درجة كمية ضعيفة)")
+
+    Portfolio Data Snapshot:
+    ---
+    {data_str}
+    ---
+    
+    Analysis (in Arabic):
+    """
+    
+    # --- 2. Try Gemini (Primary) ---
+    if gemini_api_key and gemini_api_key != "AIzaSy...YOUR_GEMINI_KEY":
+        try:
+            logging.info("[Portfolio] Attempting Gemini API for portfolio summary...")
+            client = genai.Client(api_key=gemini_api_key)
+            
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    {"role": "user", "parts": [{"text": prompt}]}
+                ],
+                config={"system_instruction": "You are a helpful portfolio analyst providing summaries in Arabic. The output must be formatted with Arabic markdown headings and bullet points."}
+            )
+            summary = response.text
+            logging.info("[Portfolio] Successfully received summary from Gemini.")
+            return str(summary)
+            
+        except GeminiAPIError as e:
+            logging.warning(f"[Portfolio] Gemini API failed: {e}. Falling back to OpenAI...")
+        except Exception as e:
+            logging.warning(f"[Portfolio] Non-API error with Gemini: {e}. Falling back to OpenAI...")
+
+    # --- 3. Fallback to OpenAI ---
+    if openai_api_key and openai_api_key != "sk-YOUR_ACTUAL_API_KEY_GOES_HERE":
+        try:
+            logging.info("[Portfolio] Attempting OpenAI API (Fallback)...")
+            client = OpenAI(api_key=openai_api_key)
+
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful portfolio analyst providing summaries in Arabic. The output must be formatted with Arabic markdown headings and bullet points."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            summary = completion.choices[0].message.content
+            logging.info("[Portfolio] Successfully received summary from OpenAI (Fallback).")
+            return str(summary)
+
+        except Exception as e:
+            logging.error(f"[Portfolio] OpenAI API failed: {e}")
+            return f"N/A (AI Summary Error: OpenAI API failed.)"
+            
+    else:
+        logging.warning("[Portfolio] Gemini failed and OpenAI key is missing or invalid.")
+        return "N/A (AI Summary Disabled: API Keys Missing or Invalid)"
+
+# --- ✅ NEW FUNCTION (Phase 3): AI News Sentiment ---
+def get_ai_news_sentiment(headlines_list, CONFIG):
+    """
+    Analyzes a list of news headlines and returns a sentiment score from -1.0 to 1.0.
+    """
+    gemini_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY")
+    openai_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("OPENAI_API_KEY")
+    
+    if not headlines_list:
+        return 0.0
+
+    # Join headlines into a single string for the prompt
+    headlines_str = "\n- ".join(headlines_list)
+    
+    prompt = f"""
+    Task: Act as a financial news sentiment analyst. I will provide you with a list of recent news headlines for a stock.
+    Analyze the *overall sentiment* of these headlines.
+    Respond with a single JSON object with one key, "sentiment_score", which must be a single float between -1.0 (very bearish) and 1.0 (very bullish).
+    
+    Example:
+    Headlines:
+    - "XYZ Corp beats earnings estimates"
+    - "XYZ Corp raises guidance"
+    Response: {{"sentiment_score": 0.8}}
+    
+    Example:
+    Headlines:
+    - "ABC Corp misses revenue targets"
+    - "CEO of ABC Corp under investigation"
+    Response: {{"sentiment_score": -0.9}}
+    
+    Example:
+    Headlines:
+    - "Analysts await Fed decision"
+    - "Market is flat"
+    Response: {{"sentiment_score": 0.0}}
+
+    Headlines to Analyze:
+    - {headlines_str}
+    
+    Response (JSON only):
+    """
+    
+    raw_response = None
+
+    # --- 1. Try Gemini (Primary) ---
+    if gemini_api_key and gemini_api_key != "AIzaSy...YOUR_GEMINI_KEY":
+        try:
+            logging.info(f"[AI News] Attempting Gemini API for sentiment...")
+            client = genai.Client(api_key=gemini_api_key)
+            
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    {"role": "user", "parts": [{"text": prompt}]}
+                ],
+                config={"system_instruction": "You are a helpful JSON-only sentiment analyst."}
+            )
+            raw_response = response.text
+            
+        except Exception as e:
+            logging.warning(f"[AI News] Gemini API failed: {e}. Falling back to OpenAI...")
+
+    # --- 2. Fallback to OpenAI ---
+    if raw_response is None and openai_api_key and openai_api_key != "sk-YOUR_ACTUAL_API_KEY_GOES_HERE":
+        try:
+            logging.info(f"[AI News] Attempting OpenAI API (Fallback)...")
+            client = OpenAI(api_key=openai_api_key)
+
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful JSON-only sentiment analyst. Respond only with the JSON object."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            raw_response = completion.choices[0].message.content
+        except Exception as e:
+            logging.error(f"[AI News] OpenAI API failed: {e}")
+            return 0.0
+            
+    # --- 3. Parse the response ---
+    if raw_response:
+        try:
+            # Clean the response (LLMs sometimes add markdown)
+            clean_json_str = raw_response.strip().replace("```json\n", "").replace("\n```", "")
+            sentiment_data = json.loads(clean_json_str)
+            score = float(sentiment_data.get("sentiment_score", 0.0))
+            logging.info(f"[AI News] Successfully parsed sentiment score: {score}")
+            return score
+        except Exception as e:
+            logging.error(f"[AI News] Failed to parse sentiment JSON: {e}. Response was: {raw_response}")
+            return 0.0
+            
+    logging.warning("[AI News] All AI providers failed or were disabled.")
+    return 0.0
+
+# --- ✅ NEW FUNCTION (USER REQ): AI Top 20 Summary ---
+def get_ai_top20_summary(top_20_data_json, CONFIG):
+    """
+    Analyzes a JSON string of the Top 20 stocks and returns recommendations.
+    """
+    gemini_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("GEMINI_API_KEY")
+    openai_api_key = CONFIG.get("DATA_PROVIDERS", {}).get("OPENAI_API_KEY")
+    
+    prompt = f"""
+    Task: Act as a professional quantitative analyst. The user has provided a JSON list of the Top 20 stocks that matched their filters, ranked by 'Final Quant Score'.
+    Your job is to analyze this list and identify the 2-3 *strongest* "Buy" or "Add" opportunities.
+    
+    A strong opportunity is a combination of:
+    1.  A high 'Final Quant Score' (already ranked).
+    2.  A 'entry_signal' of "Buy near Bullish OB".
+    3.  A good 'Risk/Reward Ratio' (e.g., > 1.5).
+    4.  Strong underlying factor scores (e.g., 'Z_Value' > 0, 'Z_Quality' > 0).
+
+    Provide a brief summary and then list your top recommendations in Arabic.
+
+    Output Format (Use Arabic and Markdown - **Forced RTL**):
+    1.  **ملخص القائمة:** (A 1-2 sentence summary of the overall list. Are there many 'Buy' signals? Is it mostly 'Value' or 'Momentum' stocks?)
+    2.  **⭐ أفضل الفرص (Top Recommendations):**
+        (List 2-3 specific stocks. For each, state the Ticker, Name, Quant Score, and a *brief* justification using the criteria above.)
+        -   **[Ticker] - [Name]** (الدرجة: [Score]): [Justification in Arabic]
+        -   **[Ticker] - [Name]** (الدرجة: [Score]): [Justification in Arabic]
+
+    Top 20 Stocks Data (JSON):
+    ---
+    {top_20_data_json}
+    ---
+    
+    Analysis (in Arabic):
+    """
+    
+    # --- 1. Try Gemini (Primary) ---
+    if gemini_api_key and gemini_api_key != "AIzaSy...YOUR_GEMINI_KEY":
+        try:
+            logging.info("[AI Top 20] Attempting Gemini API...")
+            client = genai.Client(api_key=gemini_api_key)
+            
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    {"role": "user", "parts": [{"text": prompt}]}
+                ],
+                config={"system_instruction": "You are a helpful quantitative analyst providing summaries in Arabic."}
+            )
+            summary = response.text
+            logging.info("[AI Top 20] Successfully received summary from Gemini.")
+            return str(summary)
+            
+        except GeminiAPIError as e:
+            logging.warning(f"[AI Top 20] Gemini API failed: {e}. Falling back to OpenAI...")
+        except Exception as e:
+            logging.warning(f"[AI Top 20] Non-API error with Gemini: {e}. Falling back to OpenAI...")
+
+    # --- 2. Fallback to OpenAI ---
+    if openai_api_key and openai_api_key != "sk-YOUR_ACTUAL_API_KEY_GOES_HERE":
+        try:
+            logging.info("[AI Top 20] Attempting OpenAI API (Fallback)...")
+            client = OpenAI(api_key=openai_api_key)
+
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful quantitative analyst providing summaries in Arabic."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            summary = completion.choices[0].message.content
+            logging.info("[AI Top 20] Successfully received summary from OpenAI (Fallback).")
+            return str(summary)
+
+        except Exception as e:
+            logging.error(f"[AI Top 20] OpenAI API failed: {e}")
+            return f"N/A (AI Summary Error: OpenAI API failed.)"
+            
+    else:
+        logging.warning("[AI Top 20] Gemini failed and OpenAI key is missing or invalid.")
+        return "N/A (AI Summary Disabled: API Keys Missing or Invalid)"
+
+# --- ✅ MODIFIED: Removed News from yfinance fetch ---
+def fetch_data_yfinance(ticker_obj, CONFIG):
+    """Fetches history and info from yfinance with retry logic."""
+    retries = 3
+    for attempt in range(retries):
+        try:
+            hist = ticker_obj.history(period=CONFIG.get("HISTORICAL_DATA_PERIOD", "5y"))
+            info = ticker_obj.info
+            
+            # Add earnings data
+            earnings = {
+                "earnings": ticker_obj.income_stmt,
+                "quarterly_earnings": ticker_obj.quarterly_income_stmt,
+                "calendar": ticker_obj.calendar,
+                # ❌ REMOVED: "news": ticker_obj.get_news()
+            }
+            
+            if hist.empty or info is None:
+                logging.warning(f"[{ticker_obj.ticker}] yfinance returned empty history or info (Attempt {attempt + 1}).")
+                # Don't retry on empty data, yfinance responded successfully
+                return None 
+                
+            return {"hist": hist, "info": info, "earnings_data": earnings, "source": "yfinance"}
+        
+        except Exception as e:
+            logging.error(f"[{ticker_obj.ticker}] yfinance data fetch error (Attempt {attempt + 1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(1) # 1 second backoff
+            else:
+                return None # Failed all retries
+    return None
+
+# --- ✅ MODIFIED: Removed News from Alpha Vantage fetch ---
 def fetch_data_alpha_vantage(ticker, api_key, CONFIG):
-    """Fallback data provider: Alpha Vantage."""
+    """Fallback data provider: Alpha Vantage with retry logic."""
     if not api_key or api_key == "YOUR_API_KEY_1": # Check against a default placeholder
         logging.warning(f"[{ticker}] Alpha Vantage API key ('{api_key}') is not set. Skipping fallback.")
         return None
@@ -567,95 +1004,123 @@ def fetch_data_alpha_vantage(ticker, api_key, CONFIG):
     base_url = "https://www.alphavantage.co/query"
     hist_data = None
     info_data = None
+    # ❌ REMOVED: news_list = []
 
-    try:
-        # 1. Fetch History
-        hist_params = {
-            "function": "TIME_SERIES_DAILY_ADJUSTED",
-            "symbol": ticker,
-            "outputsize": "full",
-            "apikey": api_key
-        }
-        response = requests.get(base_url, params=hist_params, timeout=10)
-        response.raise_for_status()
-        hist_json = response.json()
-        
-        if "Time Series (Daily)" in hist_json:
-            hist_data = pd.DataFrame.from_dict(hist_json["Time Series (Daily)"], orient='index')
-            hist_data.index = pd.to_datetime(hist_data.index)
-            hist_data = hist_data.astype(float)
-            hist_data.rename(columns={
-                '1. open': 'Open',
-                '2. high': 'High',
-                '3. low': 'Low',
-                '4. close': 'Close',
-                '5. adjusted close': 'Adj Close',
-                '6. volume': 'Volume'
-            }, inplace=True)
-            hist_data = hist_data.sort_index()
-            hist_data['Dividends'] = 0.0
-            hist_data['Stock Splits'] = 0.0
-        else:
-            logging.warning(f"[{ticker}] AV History fetch warning: {hist_json.get('Note') or hist_json.get('Error Message')}")
-
-        # 2. Fetch Info
-        info_params = {"function": "OVERVIEW", "symbol": ticker, "apikey": api_key}
-        response = requests.get(base_url, params=info_params, timeout=10)
-        response.raise_for_status()
-        info_data = response.json()
-        if not info_data or "Symbol" not in info_data:
-             logging.warning(f"[{ticker}] AV Info fetch warning: {info_data.get('Note') or info_data.get('Error Message')}")
-             info_data = None
-
-        # 3. Fetch News & Sentiment
-        news_list = [] # Default
+    retries = 3
+    for attempt in range(retries):
         try:
-            news_params = {
-                "function": "NEWS_SENTIMENT",
-                "tickers": ticker,
-                "limit": 10, # Get 10 recent articles
+            # 1. Fetch History
+            hist_params = {
+                "function": "TIME_SERIES_DAILY_ADJUSTED",
+                "symbol": ticker,
+                "outputsize": "full",
                 "apikey": api_key
             }
-            response = requests.get(base_url, params=news_params, timeout=10)
-            response.raise_for_status()
-            news_data = response.json()
+            response_hist = requests.get(base_url, params=hist_params, timeout=10)
+            response_hist.raise_for_status()
+            hist_json = response_hist.json()
             
-            if "feed" in news_data:
-                for item in news_data["feed"]:
-                    try:
-                        # Convert AV time format 'YYYYMMDDTHHMMSS' to a timestamp
-                        publish_time = datetime.strptime(item.get('time_published'), '%Y%m%dT%H%M%S')
-                        publish_timestamp = int(publish_time.timestamp())
-                    except Exception:
-                        publish_timestamp = 0
-                        
-                    news_list.append({
-                        'title': item.get('title'),
-                        'providerPublishTime': publish_timestamp 
-                    })
+            if "Time Series (Daily)" in hist_json:
+                hist_data = pd.DataFrame.from_dict(hist_json["Time Series (Daily)"], orient='index')
+                hist_data.index = pd.to_datetime(hist_data.index)
+                hist_data = hist_data.astype(float)
+                hist_data.rename(columns={
+                    '1. open': 'Open',
+                    '2. high': 'High',
+                    '3. low': 'Low',
+                    '4. close': 'Close',
+                    '5. adjusted close': 'Adj Close',
+                    '6. volume': 'Volume'
+                }, inplace=True)
+                hist_data = hist_data.sort_index()
+                hist_data['Dividends'] = 0.0
+                hist_data['Stock Splits'] = 0.0
             else:
-                logging.warning(f"[{ticker}] AV news fetch warning: {news_data.get('Note') or news_data.get('Error Message')}")
+                logging.warning(f"[{ticker}] AV History fetch warning: {hist_json.get('Note') or hist_json.get('Error Message')}")
+                if 'Note' in hist_json: # API limit
+                    time.sleep(15) # Longer sleep for API limits
+                    continue # Retry
 
+            # 2. Fetch Info
+            info_params = {"function": "OVERVIEW", "symbol": ticker, "apikey": api_key}
+            response_info = requests.get(base_url, params=info_params, timeout=10)
+            response_info.raise_for_status()
+            info_data = response_info.json()
+            if not info_data or "Symbol" not in info_data:
+                 logging.warning(f"[{ticker}] AV Info fetch warning: {info_data.get('Note') or info_data.get('Error Message')}")
+                 if 'Note' in info_data: # API limit
+                     time.sleep(15) # Longer sleep for API limits
+                     continue # Retry
+                 info_data = None
+
+            # ❌ REMOVED: 3. Fetch News & Sentiment block
+
+            # If we got here, all requests succeeded
+            break # Exit retry loop
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"[{ticker}] Alpha Vantage request error (Attempt {attempt + 1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(1) # 1 second backoff
+            else:
+                return None # Failed all retries
         except Exception as e:
-            logging.warning(f"[{ticker}] Failed to fetch Alpha Vantage news: {e}")
-            # Don't fail the whole function, just return no news
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"[{ticker}] Alpha Vantage request error: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"[{ticker}] Alpha Vantage processing error: {e}")
-        return None
+            logging.error(f"[{ticker}] Alpha Vantage processing error (Attempt {attempt + 1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(1)
+            else:
+                return None # Failed all retries
 
     if hist_data is not None and info_data is not None:
         return {
             "hist": hist_data, 
             "info": info_data, 
-            "earnings_data": {"news": news_list}, # <-- ADD THE NEWS HERE
+            "earnings_data": {}, # <-- ✅ MODIFIED: Return empty dict
             "source": "alpha_vantage"
         }
     else:
         return None
+
+# --- ✅ NEW FUNCTION: Fetch News from Finnhub ---
+def fetch_data_finnhub_news(ticker, api_key):
+    """
+    Fetches company news from Finnhub.io for the past 3 days.
+    """
+    if not api_key or api_key == "YOUR_NEW_FINNHUB_KEY_GOES_HERE":
+        logging.warning(f"[{ticker}] Finnhub API key is not set. Skipping news fetch.")
+        return []
+    
+    try:
+        # Get dates for the last 3 days
+        to_date = datetime.now().strftime('%Y-%m-%d')
+        from_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+        
+        base_url = "https://finnhub.io/api/v1/company-news"
+        params = {
+            "symbol": ticker,
+            "from": from_date,
+            "to": to_date,
+            "token": api_key
+        }
+        
+        response = requests.get(base_url, params=params, timeout=5)
+        response.raise_for_status()
+        news_data = response.json()
+        
+        if isinstance(news_data, list) and len(news_data) > 0:
+            logging.info(f"[{ticker}] Successfully fetched {len(news_data)} news items from Finnhub.")
+            return news_data # Returns a list of news dicts
+        else:
+            logging.info(f"[{ticker}] Finnhub returned no news.")
+            return []
+            
+    except requests.exceptions.RequestException as e:
+        logging.error(f"[{ticker}] Finnhub news request error: {e}")
+        return []
+    except Exception as e:
+        logging.error(f"[{ticker}] Error processing Finnhub news: {e}")
+        return []
+
 
 def is_data_valid(data, source="yfinance"):
     """
@@ -968,104 +1433,89 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         
         parsed['entry_signal'] = str(entry_signal) # Force string
 
-        # News & Earnings Date
-        if source == "yfinance":
-            try:
-                # --- THIS IS THE ORIGINAL NEWS CODE ---
-                news = earnings_data.get('news', [])
-                news_str = "No"
-                news_list_str = "N/A"
-                
-                if news and isinstance(news, list):
-                    news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
-                    news_list_str = ", ".join(news_titles) # Flatten list to string
-                    
-                    now_ts = datetime.now().timestamp()
-                    recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
-                    if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
-                        news_str = "Yes"
-                
-                parsed['news_list'] = str(news_list_str) # Force string
-                parsed['recent_news'] = str(news_str) # Force string
-
-                # --- AI Summary Call moved to the end of the function ---
-
-                last_div_date_ts = info.get('lastDividendDate')
-                last_div_value = info.get('lastDividendValue')
-                
-                div_date_str = "N/A"
-                div_val_float = np.nan
-
-                if last_div_date_ts and pd.notna(last_div_date_ts) and last_div_value:
-                    div_date_str = pd.to_datetime(last_div_date_ts, unit='s').strftime('%Y-%m-%d')
-                    div_val_float = float(last_div_value)
-                else:
-                    divs = hist[hist['Dividends'] > 0]
-                    if not divs.empty:
-                        div_date_str = divs.index[-1].strftime('%Y-%m-%d')
-                        div_val_float = float(divs['Dividends'].iloc[-1])
-                
-                parsed['last_dividend_date'] = str(div_date_str)
-                parsed['last_dividend_value'] = float(div_val_float)
-
-
-                calendar = earnings_data.get('calendar', {})
-                date_val = "N/A"
-                if calendar and 'Earnings Date' in calendar and calendar['Earnings Date']:
-                    raw_date = calendar['Earnings Date'][0]
-                    date_val = pd.to_datetime(raw_date).strftime('%Y-%m-%d') if pd.notna(raw_date) else "N/A"
-                parsed['next_earnings_date'] = str(date_val) # Force string
-                
-                # Get Next Ex-Dividend Date
-                next_ex_div_ts = info.get('exDividendDate')
-                ex_div_date_str = "N/A"
-                if next_ex_div_ts and pd.notna(next_ex_div_ts):
-                    if next_ex_div_ts > datetime.now().timestamp():
-                        ex_div_date_str = pd.to_datetime(next_ex_div_ts, unit='s').strftime('%Y-%m-%d')
-                parsed['next_ex_dividend_date'] = str(ex_div_date_str)
-
-            except Exception as e:
-                 logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
-                 parsed['news_list'] = "N/A"
-                 parsed['recent_news'] = "N/A"
-                 parsed['next_earnings_date'] = "N/A"
-                 parsed['last_dividend_date'] = "N/A"
-                 parsed['last_dividend_value'] = np.nan
-                 parsed['next_ex_dividend_date'] = "N/A"
-        
-        else: # Alpha Vantage
-             # --- MODIFIED: Use the news we fetched ---
-             news = earnings_data.get('news', [])
-             news_str = "No"
-             news_list_str = "N/A"
-             
-             if news and isinstance(news, list):
-                news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
-                news_list_str = ", ".join(news_titles)
-                
-                now_ts = datetime.now().timestamp()
-                recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
-                if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
-                    news_str = "Yes"
+        # --- ✅ NEW: News & Earnings Date (Consolidated Finnhub logic) ---
+        try:
+            # 1. Parse Finnhub News
+            news = data.get('finnhub_news', []) # Get news from process_ticker
+            news_list_str = "N/A"
             
-             parsed['news_list'] = str(news_list_str) # Force string
-             parsed['recent_news'] = str(news_str) # Force string
-             # --- END MODIFICATION ---
-             
-             parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
-             parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
-             parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
-             parsed['next_ex_dividend_date'] = str(info.get('ExDividendDate', 'N/A (AV)'))
+            if news and isinstance(news, list):
+                # Get top 5 headlines
+                news_titles = [str(item.get('headline', 'N/A')) for item in news[:5]]
+                news_list_str = ", ".join(news_titles) # Flatten list to string
+            
+            parsed['news_list'] = str(news_list_str) # Force string
+            
+            # --- ✅ MODIFIED (Phase 3): Get AI Sentiment Score ---
+            # This score is now passed from process_ticker
+            parsed['news_sentiment_score'] = float(data.get('news_sentiment_score', 0.0))
+            # --- End of change ---
 
+            # 2. Parse Earnings/Dividends (from yfinance info/earnings_data)
+            last_div_date_ts = info.get('lastDividendDate')
+            last_div_value = info.get('lastDividendValue')
+            
+            div_date_str = "N/A"
+            div_val_float = np.nan
+
+            if last_div_date_ts and pd.notna(last_div_date_ts) and last_div_value:
+                div_date_str = pd.to_datetime(last_div_date_ts, unit='s').strftime('%Y-%m-%d')
+                div_val_float = float(last_div_value)
+            else:
+                divs = hist[hist['Dividends'] > 0]
+                if not divs.empty:
+                    div_date_str = divs.index[-1].strftime('%Y-%m-%d')
+                    div_val_float = float(divs['Dividends'].iloc[-1])
+            
+            parsed['last_dividend_date'] = str(div_date_str)
+            parsed['last_dividend_value'] = float(div_val_float)
+
+            calendar = earnings_data.get('calendar', {})
+            date_val = "N/A"
+            if calendar and 'Earnings Date' in calendar and calendar['Earnings Date']:
+                raw_date = calendar['Earnings Date'][0]
+                date_val = pd.to_datetime(raw_date).strftime('%Y-%m-%d') if pd.notna(raw_date) else "N/A"
+            parsed['next_earnings_date'] = str(date_val) # Force string
+            
+            # Get Next Ex-Dividend Date
+            next_ex_div_ts = info.get('exDividendDate')
+            ex_div_date_str = "N/A"
+            if next_ex_div_ts and pd.notna(next_ex_div_ts):
+                if next_ex_div_ts > datetime.now().timestamp():
+                    ex_div_date_str = pd.to_datetime(next_ex_div_ts, unit='s').strftime('%Y-%m-%d')
+            parsed['next_ex_dividend_date'] = str(ex_div_date_str)
+
+        except Exception as e:
+             logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
+             parsed['news_list'] = "N/A"
+             parsed['news_sentiment_score'] = 0.0 # <-- ✅ MODIFIED (Phase 3)
+             parsed['next_earnings_date'] = "N/A"
+             parsed['last_dividend_date'] = "N/A"
+             parsed['last_dividend_value'] = np.nan
+             parsed['next_ex_dividend_date'] = "N/A"
+        
+        # ❌ REMOVED: Old news parsing blocks for yfinance and Alpha Vantage
+        
         # --- 8. Risk Management ---
-        # --- ✅ MODIFIED (P2): Exit Rule Logic ---
         
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
         atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
-        # --- Use Fib 1.618 as a fallback if ATR_TAKE_PROFIT_MULTIPLIER is not in config ---
         fib_target_mult = rm_config.get('ATR_TAKE_PROFIT_MULTIPLIER', 1.618) 
-        risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 500)
         use_cut_loss_filter = rm_config.get('USE_CUT_LOSS_FILTER', True)
+
+        # --- MODIFIED (USER REQ): Dynamic Risk Calculation ---
+        # The keys here were corrected to match the config keys
+        total_equity = rm_config.get('TOTAL_EQUITY', None)
+        risk_percent = rm_config.get('RISK_PERCENT_PER_TRADE', 0.005) # 0.5% default
+        default_risk_amount = rm_config.get('RISK_PER_TRADE_AMOUNT', 50) # Fallback to $50
+
+        risk_per_trade_usd = np.nan
+        if total_equity and total_equity > 0:
+            risk_per_trade_usd = total_equity * risk_percent
+        else:
+            # Use the explicit fallback amount ($50)
+            risk_per_trade_usd = default_risk_amount 
+        # --- END OF MODIFICATION ---
         
         atr = parsed.get('ATR')
         last_price = parsed.get('last_price')
@@ -1161,7 +1611,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             parsed['Risk % (to Stop)'] = float((risk_per_share / last_price) * 100) if last_price != 0 else np.nan
             parsed['Position Size (Shares)'] = float(position_size_shares)
             parsed['Position Size (USD)'] = float(position_size_usd)
-            parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd)
+            parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd) # <-- Now dynamic
         else:
             parsed['Stop Loss Price'] = np.nan
             parsed['Final Stop Loss'] = np.nan
@@ -1170,7 +1620,7 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             parsed['Risk % (to Stop)'] = np.nan
             parsed['Position Size (Shares)'] = np.nan
             parsed['Position Size (USD)'] = np.nan
-            parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd)
+            parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd) # <-- Now dynamic
         
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
@@ -1186,22 +1636,16 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
         if 'hist_df' in parsed:
             del parsed['hist_df'] 
 
-        # --- NEW (P4) - FINAL AI ANALYSIS STEP ---
-        # This is called last so the AI has all data points (like R/R ratio)
-        try:
-            company_short_name = parsed.get('shortName', ticker_symbol)
-            news_list = earnings_data.get('news', []) # Get the news list again
-            parsed['ai_holistic_analysis'] = get_ai_stock_analysis(ticker_symbol, company_short_name, news_list, parsed, CONFIG)
-        except Exception as ai_e:
-            logging.error(f"[{ticker_symbol}] Fatal error calling get_ai_stock_analysis: {ai_e}")
-            parsed['ai_holistic_analysis'] = "N/A (AI Analysis Failed)"
-        # --- END NEW (P4) ---
+        # --- ✅ MODIFIED (P4) - AI CALL REMOVED ---
+        # Set placeholder to None. AI call now happens on-demand in streamlit_app.py
+        parsed['ai_holistic_analysis'] = None
+        # --- END MODIFICATION ---
 
         return parsed
         
     except Exception as e:
         logging.error(f"[{ticker_symbol}] Fatal error in parse_ticker_data: {e}", exc_info=True)
-        # ✅ FIX: Return a flat dict with default bools to prevent Arrow error
+        # ✅ FIX: Standardized error dict
         return {
             'ticker': str(ticker_symbol), 
             'success': bool(False), 
@@ -1214,35 +1658,44 @@ def parse_ticker_data(data, ticker_symbol, CONFIG):
             'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False),
             'bearish_ob_volume_ok': bool(False),
-            'next_ex_dividend_date': 'N/A',
-            'shortName': 'N/A', # <-- ✅ ADD THIS
-            'ai_holistic_analysis': 'N/A (Fatal Error)' # <-- NEW (P4)
+            'smc_volume_missing': bool(False),
+            'z_score_fallback': bool(False),
+            'next_ex_dividend_date': 'N/A', 
+            'shortName': 'N/A', 
+            'ai_holistic_analysis': None,
+            'news_sentiment_score': 0.0,
+            'news_list': 'N/A'
         }
 
 
-# --- ✅ MODIFIED FUNCTION (Accepts CONFIG) ---
-def process_ticker(ticker, CONFIG):
+# --- ✅ MODIFIED FUNCTION (Accepts CONFIG, Fetches News) ---
+def process_ticker(ticker, CONFIG, fetch_news=True):
     """
     Main ticker processing function.
     Attempts yfinance, validates, falls back to Alpha Vantage, validates,
-    then parses all data and calculates metrics.
+    fetches news from Finnhub, then parses all data.
     """
+    # ✅ FIX: Standardized error dict
+    error_dict = {
+        'ticker': str(ticker), 'success': bool(False), 'error': 'Unknown error',
+        'bullish_ob_validated': bool(False), 'bearish_ob_validated': bool(False),
+        'earnings_negative': bool(False), 'earnings_volatile': bool(False),
+        'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
+        'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
+        'smc_volume_missing': bool(False), 'z_score_fallback': bool(False),
+        'next_ex_dividend_date': 'N/A', 'shortName': 'N/A', 
+        'ai_holistic_analysis': None, 'news_sentiment_score': 0.0,
+        'news_list': 'N/A'
+    }
+
     if CONFIG is None:
         logging.error(f"process_ticker ({ticker}): CONFIG is None.")
-        return {
-            'ticker': str(ticker), 'success': bool(False), 'error': 'Config not loaded',
-            'bullish_ob_validated': bool(False), 'bearish_ob_validated': bool(False),
-            'earnings_negative': bool(False), 'earnings_volatile': bool(False),
-            'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
-            'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-            'next_ex_dividend_date': 'N/A',
-            'shortName': 'N/A', # <-- ✅ ADD THIS
-            'ai_holistic_analysis': 'N/A (Config Error)' # <-- NEW (P4)
-        }
+        error_dict['error'] = 'Config not loaded'
+        return error_dict
         
     # 1. Attempt yfinance
     ticker_obj = yf.Ticker(ticker)
-    yf_data = fetch_data_yfinance(ticker_obj, CONFIG)
+    yf_data = fetch_data_yfinance(ticker_obj, CONFIG) # <-- Now has retries
     
     hist_df_for_storage = yf_data.get('hist') if yf_data else None
     
@@ -1262,7 +1715,7 @@ def process_ticker(ticker, CONFIG):
             av_data = None
         else:
             selected_av_key = random.choice(av_keys_list)
-            av_data = fetch_data_alpha_vantage(ticker, selected_av_key, CONFIG)
+            av_data = fetch_data_alpha_vantage(ticker, selected_av_key, CONFIG) # <-- Now has retries
         
         if is_data_valid(av_data, source="alpha_vantage"):
             data_to_parse = av_data
@@ -1270,18 +1723,35 @@ def process_ticker(ticker, CONFIG):
                  hist_df_for_storage = av_data.get('hist')
         else:
             logging.error(f"[{ticker}] All data providers failed or returned invalid data.")
-            return {
-                'ticker': str(ticker), 'success': bool(False), 'error': 'All data providers failed',
-                'bullish_ob_validated': bool(False), 'bearish_ob_validated': bool(False),
-                'earnings_negative': bool(False), 'earnings_volatile': bool(False),
-                'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
-                'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-                'next_ex_dividend_date': 'N/A',
-                'shortName': 'N/A', # <-- ✅ ADD THIS
-                'ai_holistic_analysis': 'N/A (Data Failed)' # <-- NEW (P4)
-            }
+            error_dict['error'] = 'All data providers failed'
+            return error_dict
             
-    # 3. Parse and Calculate
+    # --- ✅ NEW: 3. Fetch News from Finnhub (Conditional) ---
+    if fetch_news:
+        finnhub_key = CONFIG.get("DATA_PROVIDERS", {}).get("FINNHUB_API_KEY")
+        if finnhub_key and finnhub_key != "YOUR_NEW_FINNHUB_KEY_GOES_HERE":
+            news_list = fetch_data_finnhub_news(ticker, finnhub_key)
+            data_to_parse['finnhub_news'] = news_list # Add news to the data dict
+            
+            # --- ✅ NEW (Phase 3): Get AI Sentiment Score ---
+            if news_list:
+                headlines = [item.get('headline', '') for item in news_list]
+                sentiment_score = get_ai_news_sentiment(headlines, CONFIG)
+                data_to_parse['news_sentiment_score'] = sentiment_score
+            else:
+                data_to_parse['news_sentiment_score'] = 0.0
+            # --- End of change ---
+            
+        else:
+            logging.warning(f"[{ticker}] FINNHUB_API_KEY not found or is placeholder. News will be missing.")
+            data_to_parse['finnhub_news'] = []
+            data_to_parse['news_sentiment_score'] = 0.0
+    else:
+        # Don't fetch news to save API calls
+        data_to_parse['finnhub_news'] = []
+        data_to_parse['news_sentiment_score'] = 0.0 # Default for non-deep dive
+            
+    # 4. Parse and Calculate
     try:
         parsed_data = parse_ticker_data(data_to_parse, ticker, CONFIG)
         
@@ -1292,16 +1762,8 @@ def process_ticker(ticker, CONFIG):
         
     except Exception as e:
         logging.critical(f"[{ticker}] Unhandled exception in parse_ticker_data: {e}", exc_info=True)
-        return {
-            'ticker': str(ticker), 'success': bool(False), 'error': f'Parsing error: {e}',
-            'bullish_ob_validated': bool(False), 'bearish_ob_validated': bool(False),
-            'earnings_negative': bool(False), 'earnings_volatile': bool(False),
-            'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
-            'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
-            'next_ex_dividend_date': 'N/A',
-            'shortName': 'N/A', # <-- ✅ ADD THIS
-            'ai_holistic_analysis': 'N/A (Parsing Error)' # <-- NEW (P4)
-        }
+        error_dict['error'] = f'Parsing error: {e}'
+        return error_dict
 
 
 # --- DEPRECATED FUNCTIONS (Kept for compatibility) ---
