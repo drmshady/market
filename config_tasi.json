@@ -18,7 +18,10 @@
     "ALPHA_VANTAGE_API_KEYS": [
       "YOUR_API_KEY_1",
       "YOUR_API_KEY_2"
-    ]
+    ],
+    "GEMINI_API_KEY": "AIzaSy...YOUR_GEMINI_KEY",
+    "OPENAI_API_KEY": "sk-YOUR_ACTUAL_API_KEY_GOES_HERE",
+    "FINNHUB_API_KEY": "YOUR_NEW_FINNHUB_KEY_GOES_HERE"
   },
   "LOGGING": {
     "LOG_FILE_PATH": "spus_analysis_tasi.log",
@@ -93,7 +96,10 @@
           "high_is_good": true
         },
         {
-          "name": "risk_adjusted_momentum",
+          "name":Error: Failed to fetch data for 4006.SR. Error: All data providers failed
+ERROR:root:Error processing 4006.SR in main loop: 'NoneType' object is not subscriptable
+ERROR:root:Failed to process 4006.SR: 'NoneType' object is not subscriptable
+ "risk_adjusted_momentum",
           "high_is_good": true
         }
       ]
@@ -137,7 +143,7 @@
           "high_is_good": false
         },
         {
-          "name":L "beta",
+          "name": "beta",
           "high_is_good": false
         }
       ]
