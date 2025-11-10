@@ -985,8 +985,8 @@ def run_market_analyzer_app(config_file_name):
             st.warning(f"Could not load logo.jpg: {e}")
         
         st.title("Quant Analyzer")
-        # --- ✅ MODIFIED (P4): Hard-coded market name ---
-        st.markdown(f"Market: **US Market (SPUS)**")
+        # --- ✅ MODIFIED (USER REQ): Dynamic market name ---
+        st.markdown(f"Market: **{CONFIG.get('MARKET_NAME', 'Quant Analyzer')}**")
         st.divider()
 
         st.subheader("Controls")
@@ -2451,24 +2451,45 @@ def run_analysis_for_scheduler():
 
 # --- ⭐️ 7. Main App Entry Point (Router) ⭐️ ---
 
-# --- ✅ MODIFIED (P4): Replaced main() with direct app call ---
 def main():
     """
-    Main entry point. Runs the SPUS analyzer (config.json) directly.
-    The market selection landing page has been removed.
+    Main entry point. Runs the Market Analyzer.
+    - If no market is selected, it shows the landing page.
+    - If a market is selected (in session_state), it runs the analyzer.
     """
-    try:
-        # Hard-code the config.json file
-        run_market_analyzer_app("config.json")
-    except Exception as e:
-        # Catch errors if state is mismatched
-        st.error(f"An application error occurred: {e}")
-        st.warning("Clearing session state and restarting. Please wait.")
-        # Clear all session state keys to reset the app
-        for key in st.session_state.keys():
-            del st.session_state[key]
-        time.sleep(3)
-        st.rerun()
+    
+    # Check if a market has been selected
+    if 'config_file_name' not in st.session_state:
+        # --- NO MARKET SELECTED: Show Landing Page ---
+        st.title("Welcome to the Multi-Market Quant Analyzer")
+        st.markdown("Please select a market to analyze.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("📈 Scan US Market (SPUS)", use_container_width=True, type="primary"):
+                st.session_state.config_file_name = "config.json"
+                st.rerun()
+                
+        with col2:
+            if st.button("🇸🇦 Scan Saudi Market (TASI)", use_container_width=True):
+                st.session_state.config_file_name = "config_tasi.json"
+                st.rerun()
+                
+    else:
+        # --- MARKET IS SELECTED: Run the Analyzer App ---
+        config_file_name = st.session_state.config_file_name
+        try:
+            run_market_analyzer_app(config_file_name)
+        except Exception as e:
+            # Catch errors if state is mismatched
+            st.error(f"An application error occurred: {e}")
+            st.warning("Clearing session state and restarting. Please wait.")
+            # Clear all session state keys to reset the app
+            for key in st.session_state.keys():
+                del st.session_state[key]
+            time.sleep(3)
+            st.rerun()
 
 
 if __name__ == "__main__":
