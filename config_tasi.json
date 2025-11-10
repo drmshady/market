@@ -96,10 +96,7 @@
           "high_is_good": true
         },
         {
-          "name":Error: Failed to fetch data for 4006.SR. Error: All data providers failed
-ERROR:root:Error processing 4006.SR in main loop: 'NoneType' object is not subscriptable
-ERROR:root:Failed to process 4006.SR: 'NoneType' object is not subscriptable
- "risk_adjusted_momentum",
+          "name": "risk_adjusted_momentum",
           "high_is_good": true
         }
       ]
