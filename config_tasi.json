@@ -1,44 +1,43 @@
 {
-  "MARKET_INDEX_TICKER": "^TASI.SR",
-  "HALT_IN_BEAR_MARKET": true,
+  "MARKET_NAME": "TASI (Saudi Market)",
   "TICKER_SOURCE": "LOCAL_CSV",
   "TICKER_LIST_FILE": "tasi_tickers.csv",
+  "SPUS_HOLDINGS_CSV_PATH": "holdings.csv",
+  "MARKET_INDEX_TICKER": "^TASI.SR",
+  "HALT_IN_BEAR_MARKET": false,
   "TICKER_LIMIT": 0,
-  "EXCLUDE_TICKERS": [],
+  "MAX_CONCURRENT_WORKERS": 10,
   "HISTORICAL_DATA_PERIOD": "5y",
   "SR_LOOKBACK_PERIOD": 90,
   "NEWS_LOOKBACK_HOURS": 48,
-  "MAX_CONCURRENT_WORKERS": 10,
+  "EXCLUDE_TICKERS": [
+    "CASH",
+    "CASH_USD"
+  ],
   "DATA_PROVIDERS": {
-    "ALPHA_VANTAGE_API_KEYS": ["YOUR_API_KEY_1", "YOUR_API_KEY_2"]
+    "ALPHA_VANTAGE_API_KEYS": [
+      "YOUR_API_KEY_1",
+      "YOUR_API_KEY_2"
+    ],
+    "GEMINI_API_KEY": "AIzaSy...YOUR_GEMINI_KEY",
+    "OPENAI_API_KEY": "sk-YOUR_ACTUAL_API_KEY_GOES_HERE",
+    "FINNHUB_API_KEY": "YOUR_NEW_FINNHUB_KEY_GOES_HERE"
   },
   "LOGGING": {
-    "LOG_FILE_PATH": "tasi_analysis.log",
-    "EXCEL_FILE_PATH": "tasi_quantitative_report.xlsx",
-    "RESULTS_DIR": "results_history_tasi"
-  },
-  "STATISTICAL": {
-    "WINSORIZE_LIMIT": 0.05,
-    "MIN_SECTOR_SIZE_FOR_MEDIAN": 3
-  },
-  "DEFAULT_FACTOR_WEIGHTS": {
-    "Value": 0.20,
-    "Momentum": 0.15,
-    "Quality": 0.15,
-    "Size": 0.10,
-    "LowVolatility": 0.15,
-    "Technical": 0.15,
-    "QxM": 0.10
+    "LOG_FILE_PATH": "spus_analysis_tasi.log",
+    "EXCEL_FILE_PATH": "spus_analysis_results_tasi.xlsx",
+    "RESULTS_DIR": "results_history"
   },
   "TECHNICALS": {
     "SHORT_MA_WINDOW": 50,
     "LONG_MA_WINDOW": 200,
     "RSI_WINDOW": 14,
-    "ATR_WINDOW": 14,
     "ADX_WINDOW": 14,
+    "ATR_WINDOW": 14,
     "MACD_SHORT_SPAN": 12,
     "MACD_LONG_SPAN": 26,
     "MACD_SIGNAL_SPAN": 9,
+    "REGIME_VOLATILITY_THRESHOLD": 5.0,
     "SMC_ORDER_BLOCKS": {
       "LOOKBACK_PERIOD": 252,
       "PIVOT_BARS": 5,
@@ -49,52 +48,117 @@
     }
   },
   "RISK_MANAGEMENT": {
+    "TOTAL_EQUITY": 100000.0,
+    "RISK_PERCENT_PER_TRADE": 0.005,
+    "RISK_PER_TRADE_AMOUNT": 500.0,
     "ATR_STOP_LOSS_MULTIPLIER": 1.5,
-    "RISK_PER_TRADE_AMOUNT": 2000,
+    "ATR_TAKE_PROFIT_MULTIPLIER": 1.618,
     "USE_CUT_LOSS_FILTER": true
+  },
+  "STATISTICAL": {
+    "WINSORIZE_LIMIT": 0.05,
+    "MIN_SECTOR_SIZE_FOR_MEDIAN": 5
+  },
+  "DEFAULT_FACTOR_WEIGHTS": {
+    "Value": 0.2,
+    "Momentum": 0.2,
+    "Quality": 0.2,
+    "Size": 0.05,
+    "LowVolatility": 0.05,
+    "Technical": 0.2,
+    "QxM": 0.1
   },
   "FACTOR_DEFINITIONS": {
     "Value": {
       "components": [
-        {"name": "forwardPE", "high_is_good": false},
-        {"name": "priceToBook", "high_is_good": false},
-        {"name": "enterpriseToEbitda", "high_is_good": false},
-        {"name": "P/FCF", "high_is_good": false}
+        {
+          "name": "forwardPE",
+          "high_is_good": false
+        },
+        {
+          "name": "priceToBook",
+          "high_is_good": false
+        },
+        {
+          "name": "P/FCF",
+          "high_is_good": false
+        }
       ]
     },
     "Momentum": {
       "components": [
-        {"name": "momentum_12m", "high_is_good": true},
-        {"name": "momentum_3m", "high_is_good": true},
-        {"name": "risk_adjusted_momentum", "high_is_good": true}
+        {
+          "name": "momentum_12m",
+          "high_is_good": true
+        },
+        {
+          "name": "momentum_3m",
+          "high_is_good": true
+        },
+        {
+          "name": "risk_adjusted_momentum",
+          "high_is_good": true
+        }
       ]
     },
     "Quality": {
       "components": [
-        {"name": "returnOnEquity", "high_is_good": true},
-        {"name": "returnOnAssets", "high_is_good": true},
-        {"name": "debtToEquity", "high_is_good": false},
-        {"name": "profitMargins", "high_is_good": true},
-        {"name": "earnings_volatile", "high_is_good": false},
-        {"name":F: "earnings_negative", "high_is_good": false}
+        {
+          "name": "returnOnEquity",
+          "high_is_good": true
+        },
+        {
+          "name": "profitMargins",
+          "high_is_good": true
+        },
+        {
+          "name": "debtToEquity",
+          "high_is_good": false
+        },
+        {
+          "name": "earnings_volatile",
+          "high_is_good": false
+        },
+        {
+          "name": "earnings_negative",
+          "high_is_good": false
+        }
       ]
     },
     "Size": {
       "components": [
-        {"name": "marketCap", "high_is_good": false}
+        {
+          "name": "marketCap",
+          "high_is_good": false
+        }
       ]
     },
     "LowVolatility": {
       "components": [
-        {"name": "beta", "high_is_good": false},
-        {"name": "volatility_1y", "high_is_good": false}
+        {
+          "name": "volatility_1y",
+          "high_is_good": false
+        },
+        {
+          "name":L "beta",
+          "high_is_good": false
+        }
       ]
     },
     "Technical": {
       "components": [
-        {"name": "RSI", "high_is_good": false},
-        {"name": "Price_vs_SMA50", "high_is_good": true},
-        {"name": "Price_vs_SMA200", "high_is_good": true}
+        {
+          "name": "Price_vs_SMA50",
+          "high_is_good": true
+        },
+        {
+          "name": "Price_vs_SMA200",
+          "high_is_good": true
+        },
+        {
+          "name": "news_sentiment_score",
+          "high_is_good": true
+        }
       ]
     }
   }
