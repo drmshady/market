@@ -18,10 +18,7 @@
     "ALPHA_VANTAGE_API_KEYS": [
       "YOUR_API_KEY_1",
       "YOUR_API_KEY_2"
-    ],
-    "GEMINI_API_KEY": "AIzaSy...YOUR_GEMINI_KEY",
-    "OPENAI_API_KEY": "sk-YOUR_ACTUAL_API_KEY_GOES_HERE",
-    "FINNHUB_API_KEY": "YOUR_NEW_FINNHUB_KEY_GOES_HERE"
+    ]
   },
   "LOGGING": {
     "LOG_FILE_PATH": "spus_analysis_tasi.log",
