@@ -2203,7 +2203,7 @@ def display_portfolio_tab_v2(all_data_df, all_histories, factor_z_cols, CONFIG):
     
     if not open_positions.empty:
         # --- ✅ BUG FIX: Removed static key ---
-        selected_ticker_port = st.selectbox("Select a position to analyze:", options=open_positions.index)
+        selected_ticker_port = st.selectbox("Select a position to analyze:", options=open_positions.index, key="port_pos_analyzer_select")
         
         if selected_ticker_port:
             position_data = open_positions.loc[selected_ticker_port]
@@ -2228,15 +2228,15 @@ def display_portfolio_tab_v2(all_data_df, all_histories, factor_z_cols, CONFIG):
         
         with st.form("edit_transactions_form"):
             edited_df = st.data_editor(
-                tx_df,
-                column_config={
-                    "id": None, # Hide the ID column
-                    "Delete": st.column_config.CheckboxColumn("Delete?", default=False)
-                },
-                use_container_width=True,
-                num_rows="dynamic",
-                key="transaction_editor"
-            )
+            tx_df,
+            column_config={
+                "id": None, # Hide the ID column
+                "Delete": st.column_config.CheckboxColumn("Delete?", default=False)
+            },
+            use_container_width=True,
+            num_rows="dynamic"
+        )
+
             
             if st.form_submit_button("Save Changes"):
                 # Filter out rows marked for deletion
