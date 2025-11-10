@@ -7,8 +7,7 @@
             "Y1HLO4HB8BDBW0V7",
             "E0EKJ63G6JAZPBMW",
             "SG3YG1PP7PK0TAXQ"
-        ],
-        "GEMINI_API_KEY": "AIzaSyAXUjR3AEKrMXwJYHLRxZmDgmvdxk-Zxq0"
+        ]
     },
     "TICKER_SOURCE": "SPUS_CSV",
     "SPUS_HOLDINGS_CSV_PATH": "TidalFG_Holdings_SPUS.csv",
@@ -27,6 +26,7 @@
         "RSI_WINDOW": 14,
         "SHORT_MA_WINDOW": 50,
         "LONG_MA_WINDOW": 200,
+        "REGIME_VOLATILITY_THRESHOLD": 5.0,
         "MACD_SHORT_SPAN": 12,
         "MACD_LONG_SPAN": 26,
         "MACD_SIGNAL_SPAN": 9,
@@ -44,12 +44,14 @@
         }
     },
     "RISK_MANAGEMENT": {
-        "ATR_STOP_LOSS_MULTIPLIER": 1.5,
-        "ATR_TAKE_PROFIT_MULTIPLIER": 3.0,
-        "MAX_POSITION_PERCENTAGE": 0.10,
-        "RISK_PER_TRADE_AMOUNT": 50,
-        "USE_CUT_LOSS_FILTER": true
-    },
+    "ATR_STOP_LOSS_MULTIPLIER": 1.5,
+    "ATR_TAKE_PROFIT_MULTIPLIER": 3.0,
+    "MAX_POSITION_PERCENTAGE": 0.10,
+    "TOTAL_EQUITY": 10000, 
+    "RISK_PERCENT_PER_TRADE": 0.005,
+    "RISK_PER_TRADE_AMOUNT": 50,  
+    "USE_CUT_LOSS_FILTER": true
+},
     "STATISTICAL": {
         "WINSORIZE_LIMIT": 0.05,
         "MIN_SECTOR_SIZE_FOR_MEDIAN": 5
@@ -66,7 +68,7 @@
         "Size": 0.10,
         "LowVolatility": 0.15,
         "Technical": 0.15,
-        "QxM": 0.10
+        "QxM": 0.0
     },
     "FACTOR_DEFINITIONS": {
         "Value": {
